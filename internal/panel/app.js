@@ -264,6 +264,8 @@ function rateLimitMeta(row, now) {
     };
   }
   const title = [model, resetAt ? '上游重置：' + fmtLocalDateTime(resetAt) : '上游重置：时间未知'];
+  // 严格模式下给未声明变量赋值会抛 ReferenceError，进而炸掉整张账号表，这里必须先声明。
+  let detail = '';
   if (until && resetAt && until < resetAt) {
     // 双时钟（issue #171 问题二）：黄框出现/消失由 until 决定（网关为防超长
     // 限流拖死全池，把重试封顶在 now+softRateMax），主文字却按 resetAt 显示，
