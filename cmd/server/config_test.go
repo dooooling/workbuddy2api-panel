@@ -859,3 +859,28 @@ func TestServerReadTimeout(t *testing.T) {
 		t.Error("unparsable read_timeout should fail fast")
 	}
 }
+
+// TestBlindboxEnabledConfig 自动开盲盒开关：缺省开（键缺席 = true），显式 false 才关。
+// 关掉后连登管家仍兑换档位/抽奖，但不再花能量开盒（能量只攒不花）。
+func TestBlindboxEnabledConfig(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Schedule.BlindboxEnabled {
+		t.Error("缺省应开启自动开盲盒")
+	}
+
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{"blindbox_enabled":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schedule.BlindboxEnabled {
+		t.Error("显式 false 应关闭自动开盲盒")
+	}
+}

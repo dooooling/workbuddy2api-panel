@@ -24,9 +24,9 @@ func (s *blindboxStub) handler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/activity/growth/buddy/quota":
+			// 配额用尽后返回 affordable=0（等价于能量不足），让调用方自然收敛。
 			if s.qi >= len(s.quotas) {
-				t.Errorf("quota 调用次数超出预期")
-				w.Write([]byte(`{"code":0,"data":{"affordable":0}}`))
+				w.Write([]byte(`{"code":0,"data":{"affordable":0,"balance":0}}`))
 				return
 			}
 			w.Write([]byte(s.quotas[s.qi]))
@@ -98,5 +98,26 @@ func TestOpenBlindboxesDerivesFromBalance(t *testing.T) {
 	// 25 → 开 2（上限 5 未触及），剩 15 → 开 1，剩 5 → 停
 	if len(stub.opens) != 2 || stub.opens[0] != 2 || stub.opens[1] != 1 {
 		t.Fatalf("opens=%v want [2 1]", stub.opens)
+	}
+}
+
+// TestOpenBlindboxesRespectsSwitch 开关关闭时一个上游请求都不发（能量只攒不花）。
+func TestOpenBlindboxesRespectsSwitch(t *testing.T) {
+	stub := &blindboxStub{quotas: []string{
+		`{"code":0,"data":{"affordable":5,"balance":103,"cost_per_open":10,"max_open_count":5}}`,
+	}}
+	s := blindboxScheduler(t, stub)
+	s.SetBlindboxEnabled(false)
+	s.openBlindboxes(s.cfg.Pool.AuthByUID("u1"))
+
+	if stub.qi != 0 || len(stub.opens) != 0 {
+		t.Fatalf("开关关闭后不该发请求，quota_calls=%d opens=%v", stub.qi, stub.opens)
+	}
+
+	// 重新打开后照常工作（热生效）
+	s.SetBlindboxEnabled(true)
+	s.openBlindboxes(s.cfg.Pool.AuthByUID("u1"))
+	if len(stub.opens) == 0 {
+		t.Fatal("重新开启后应能开盒")
 	}
 }

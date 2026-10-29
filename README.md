@@ -416,6 +416,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `schedule.activity_enabled` | `true` | 活跃上报总开关 |
 | `schedule.keepalive_enabled` | `true` | token 保活总开关 |
 | `schedule.blackcat_enabled` | `true` | 夜猫子总开关 |
+| `schedule.blindbox_enabled` | `true` | 自动开盲盒：连登管家末尾用能量换伙伴（每次 10 能量，单批上限取上游 `max_open_count`）。`false` = 能量只攒不花（例如等新伙伴池上线再手动开）；面板配置页可改，热生效 |
 | `schedule.include_disabled_in_tasks` | `false` | 让**保号类**四任务（签到 / 活跃上报 / token 保活 / 余额刷新）对**已禁用**账号也执行——「禁用」只关选号，不停保号。`false`（默认）保持「禁用的跳过」 |
 | `upstream.timeout_seconds` | `120` | 短 RPC（刷新 / 签到 / 余额 / 模型列表）总时长上限 |
 | `upstream.header_timeout_seconds` | 回落 `timeout_seconds` | 聊天首字节前（响应头）上限 |

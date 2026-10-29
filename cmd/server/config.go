@@ -117,6 +117,10 @@ type Config struct {
 		// 只做 accept/claim 两条幂等请求，不跑任何行为链路；分钟级开销可忽略。
 		TaskSweepEnabled bool `json:"task_sweep_enabled"` // 缺省 true；false = 关闭
 		TaskSweepMinutes int  `json:"task_sweep_minutes"` // 缺省 15；<=0 回落 15
+
+		// BlindboxEnabled 自动开盲盒（连登管家末尾用能量换伙伴，每次 10 能量）。
+		// 缺省 true；false = 能量只攒不花（例如等新伙伴池上线再手动开）。
+		BlindboxEnabled bool `json:"blindbox_enabled"`
 	} `json:"schedule"`
 
 	Global struct {
@@ -298,6 +302,7 @@ func Default() *Config {
 	c.Schedule.ActivityEnabled = true
 	c.Schedule.KeepaliveEnabled = true
 	c.Schedule.BlackcatEnabled = true
+	c.Schedule.BlindboxEnabled = true
 	c.Schedule.BalanceRefreshEnabled = true
 	c.Schedule.BalanceRefreshMinutes = 5
 	c.Schedule.TaskSweepEnabled = true

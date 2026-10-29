@@ -168,6 +168,9 @@ const (
 // 2026-10-29 实测：GET energy/quota + POST buddy/open 三端点在本网关出站口径下均可用，
 // 单次 10 能量，单批上限 5，返回 results[].template.name（R/SR/UR 伙伴）。
 func (s *Scheduler) openBlindboxes(a *auth.Auth) {
+	if !s.blindboxEnabled() {
+		return // schedule.blindbox_enabled=false：能量只攒不花
+	}
 	total := 0
 	var names []string
 	for round := 0; round < blindboxMaxRounds; round++ {

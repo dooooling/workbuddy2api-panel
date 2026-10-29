@@ -33,6 +33,7 @@
     "activity_enabled": true,
     "keepalive_enabled": true,
     "blackcat_enabled": true,
+    "blindbox_enabled": true,
     "balance_refresh_enabled": true,
     "balance_refresh_minutes": 5,
     "include_disabled_in_tasks": false
