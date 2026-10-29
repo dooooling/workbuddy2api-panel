@@ -1574,3 +1574,41 @@ process.stdout.write(JSON.stringify(out));`
 		t.Fatalf("unknown task render=%s want %s", got, want)
 	}
 }
+
+// TestAppJSAutoTasksCoverBackend 前端「一键完成」白名单（AUTO_TASKS）必须覆盖后端
+// autoActions 的每个 code：漏一个，该任务在面板上就没有「一键完成」按钮，用户只能干看
+// （2026-10 的 5 个 expert_use_* / WorkBuddy_Valorant 正是这么漏的）。
+func TestAppJSAutoTasksCoverBackend(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; auto task coverage test skipped")
+	}
+	script := `const fs = require('fs');
+const app = fs.readFileSync(process.argv[2], 'utf8');
+const go = fs.readFileSync(process.argv[3], 'utf8');
+const s = app.indexOf('const AUTO_TASKS = {');
+const e = app.indexOf('};', s);
+if (s < 0 || e < 0) throw new Error('AUTO_TASKS not found');
+const block = app.slice(s, e);
+const ui = new Set([...block.matchAll(/'([A-Za-z0-9_]+)':/g)].map(m => m[1]));
+const be = new Set([...go.matchAll(/TaskCode:\s+"([A-Za-z0-9_]+)"/g)].map(m => m[1]));
+const missing = [...be].filter(c => !ui.has(c)).sort();
+process.stdout.write(JSON.stringify({ backend: be.size, ui: ui.size, missing }));`
+	f, err := os.CreateTemp(t.TempDir(), "auto-task-coverage-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js", "autotask.go").CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto task coverage node test failed: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if !strings.Contains(got, `"missing":[]`) {
+		t.Fatalf("前端 AUTO_TASKS 缺少后端自动动作（会导致没有「一键完成」按钮）: %s", got)
+	}
+	t.Logf("coverage=%s", got)
+}
