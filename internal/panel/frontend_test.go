@@ -1519,3 +1519,58 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
+
+// 未适配任务清单的前端渲染：三态标签、计数、需人工说明、空态隐藏。
+// 这张卡片是「上游上了新任务、网关还不会做」唯一可见的出口，渲染错了等于功能不存在。
+func TestAppJSUnknownTasksRender(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; unknown task render test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const start = src.indexOf('let unknownCache');
+const end = src.indexOf("$('btnUnknownGo')");
+if (start < 0 || end < 0 || end < start) throw new Error('unknown task renderer not found');
+const els = {};
+const host = id => (els[id] = els[id] || { innerHTML: '', textContent: '', hidden: false });
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const ctx = { Date, Number, String, Math, JSON, Array, Object, console, $: id => host(id), esc };
+vm.createContext(ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.renderUnknownTasks=renderUnknownTasks;', ctx);
+ctx.renderUnknownTasks({items: [
+  { task_code: 'expert_use_maidehao', title: '使用电商专家', target: 1, max_current: 1, claimable: true, uids: ['u1'] },
+  { task_code: 'WorkBuddy_Valorant', title: '无畏契约', target: 1, max_current: 0, uids: ['u1', 'u2'] },
+  { task_code: 'wb_wechat_oa_subscribe_task', title: '关注公众号', target: 1, max_current: 0, manual: true, manual_note: '需微信关注' },
+]});
+const out = {
+  banner: !els.unknownBanner.hidden,
+  bannerText: els.unknownBannerText.textContent,
+  summary: els.unknownSummary.textContent,
+  rows: (els.unknownList.innerHTML.match(/class="unk-row"/g) || []).length,
+  hasClaimTag: els.unknownList.innerHTML.indexOf('>达标未领<') >= 0,
+  hasManual: els.unknownList.innerHTML.indexOf('需微信关注') >= 0,
+  hasIgnoreBtn: els.unknownList.innerHTML.indexOf('data-unk-ignore="expert_use_maidehao"') >= 0,
+};
+ctx.renderUnknownTasks({ items: [] });
+out.hiddenWhenEmpty = els.unknownBanner.hidden === true;
+process.stdout.write(JSON.stringify(out));`
+	f, err := os.CreateTemp(t.TempDir(), "unknown-render-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("unknown task render node test failed: %v\n%s", err, out)
+	}
+	want := `{"banner":true,"bannerText":"检测到 2 个未适配任务，其中 1 个已达标未领（奖励领不到）；另有 1 个需人工完成","summary":"1 个达标未领 · 1 个待适配 · 1 个需人工","rows":3,"hasClaimTag":true,"hasManual":true,"hasIgnoreBtn":true,"hiddenWhenEmpty":true}`
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("unknown task render=%s want %s", got, want)
+	}
+}

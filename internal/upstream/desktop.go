@@ -376,12 +376,42 @@ type MarketExpert struct {
 	Categories    []any  `json:"categories"`
 }
 
+// MarketExpertPageSize 网关拉专家市场列表时每页的专家数（与官方专家页一致）。
+const MarketExpertPageSize = 20
+
 // MarketExpertList 拉取专家市场真实专家列表（expertType: "agent" 单专家 / "team" 专家团）。
 // expert_actual_use 的判据校验要求 id 是平台上真实存在的专家（编造 id 不计数）。
 func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpert, error) {
-	body := map[string]any{"page": 1, "page_size": 20, "sort_by": "reco_rank", "sort_order": "desc"}
+	return c.marketExpertList(a, expertType, "", 1)
+}
+
+// MarketExpertListPage 按页拉专家市场列表（page 从 1 起）。「体验某位专家」类任务
+// 只给了专家 id、没给完整属性时，需要逐页翻才能拿到服务端的版本号与分类。
+func (c *Client) MarketExpertListPage(a *auth.Auth, expertType string, page int) ([]MarketExpert, error) {
+	if page < 1 {
+		page = 1
+	}
+	return c.marketExpertList(a, expertType, "", page)
+}
+
+// MarketExpertSearch 在专家市场按关键词搜索。
+//
+// 依据桌面端 5.9.3 安装包：专家页搜索框发的仍是同一个列表接口，请求体多一个 keyword，
+// 请求头多一个 X-Language（界面语言，未设置过即 zh-CN）。expertType 与列表一致——
+// 专家页按所在页签带 agent/team，对话框里选专家时的搜索不带（传空）。
+func (c *Client) MarketExpertSearch(a *auth.Auth, expertType, keyword string) ([]MarketExpert, error) {
+	return c.marketExpertList(a, expertType, keyword, 1)
+}
+
+// marketExpertList 专家市场列表/搜索的公共实现。
+// 响应兼容两种形状：官方 5.9.3 起先取 data.items，老版本只有 data.experts。
+func (c *Client) marketExpertList(a *auth.Auth, expertType, keyword string, page int) ([]MarketExpert, error) {
+	body := map[string]any{"page": page, "page_size": MarketExpertPageSize, "sort_by": "reco_rank", "sort_order": "desc"}
 	if expertType != "" {
 		body["expert_type"] = expertType
+	}
+	if keyword != "" {
+		body["keyword"] = keyword
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -399,7 +429,11 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 	if a.UID != "" {
 		req.Header.Set("X-User-Id", a.UID)
 	}
+	if keyword != "" {
+		req.Header.Set("X-Language", "zh-CN")
+	}
 	var out struct {
+		Items   []MarketExpert `json:"items"`
 		Experts []MarketExpert `json:"experts"`
 	}
 	data, err := c.doJSON(req)
@@ -408,6 +442,9 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("expert list parse: %w", err)
+	}
+	if out.Items != nil {
+		return out.Items, nil
 	}
 	return out.Experts, nil
 }
@@ -546,6 +583,16 @@ func DesktopExpertSummonSequence(e MarketExpert) []DesktopEvent {
 			"eventCode": "expert_summoned", "id": e.ExpertID, "name": e.DisplayNameZH,
 			"expertTitle": e.ProfessionZH, "type": "expert-all",
 		},
+	}
+}
+
+// DesktopExpertSearchEvent 专家页（单专家页签）搜索框的 expert_search 事件：搜索词停下、
+// 结果返回后报一次。query=搜索词，count=搜到几位专家，scope 固定 center（专家中心），
+// source 固定 builtin（官方专家），type 为页签。任务「到专家页搜索某位专家」靠它计分。
+func DesktopExpertSearchEvent(query string, count int) DesktopEvent {
+	return DesktopEvent{
+		"eventCode": "expert_search", "query": query, "count": count,
+		"scope": "center", "source": "builtin", "type": "expert",
 	}
 }
 

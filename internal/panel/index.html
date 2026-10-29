@@ -603,6 +603,25 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     color: var(--ink-2); font-size: 12.5px; }
   .rm-row input { flex: 1; }
 
+  /* ── 未适配任务提醒（taskwatch）──────────────────────────────────────
+     上游下发但面板还没有自动动作的任务：账号池顶部一条黄色提示，任务中心一张清单。
+     分三态上色：红=达标未领（奖励在损失）、黄=待适配、灰=需人工/已忽略。 */
+  .unknown-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 0 0 14px; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent); font-size: 12.5px; }
+  .unknown-banner .t { font-weight: 600; color: var(--warn); }
+  .unknown-banner[hidden] { display: none; }
+  .unk-row { display: flex; align-items: center; gap: 10px; padding: 7px 0;
+    border-top: 1px dashed color-mix(in srgb, var(--ink-3) 25%, transparent); font-size: 12.5px; }
+  .unk-row:first-child { border-top: 0; }
+  .unk-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--ink-3); }
+  .unk-title { color: var(--ink-1); }
+  .unk-prog { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .unk-tag { padding: 1px 7px; border-radius: 999px; font-size: 11px; white-space: nowrap; }
+  .unk-tag.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .unk-tag.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .unk-tag.mute { background: color-mix(in srgb, var(--ink-3) 14%, transparent); color: var(--ink-3); }
 </style>
 <!-- 移动端适配：独立文件，必须在主 <style> 之后（@media 覆盖依赖层叠顺序） -->
 <link rel="stylesheet" href="mobile.css">
@@ -662,6 +681,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 
     <!-- 账号池 -->
     <section class="view" id="view-accounts">
+      <!-- 未适配任务提醒：上游上了新任务而面板还没有自动动作时出现（taskwatch.go）。
+           不打扰：只有真存在「待适配 / 达标未领」才显示，全部已知/忽略时隐藏。 -->
+      <div class="unknown-banner" id="unknownBanner" hidden>
+        <span class="t">需要适配</span>
+        <span id="unknownBannerText"></span>
+        <span class="grow"></span>
+        <button class="xs" id="btnUnknownGo">查看清单</button>
+      </div>
       <div class="stats">
         <div class="stat"><div class="v" id="sTotal">-</div><div class="k">账号总数</div></div>
         <div class="stat good"><div class="v" id="sHealthy">-</div><div class="k">可用</div></div>
@@ -770,6 +797,21 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <div class="d">扫描所有账号的成长任务与开学季待办，把没做的排成一列，一键执行。</div>
         </div>
         <div id="qcList"></div>
+      </div>
+
+      <!-- 未适配任务清单：上游已下发、但 autoActions 里还没有对应动作的任务。
+           数据来自周期补领清扫时的顺手比对（零额外上游请求），也可以点「刷新」强制拉一次。 -->
+      <div class="box" id="unknownBox" hidden>
+        <header>
+          <h3>未适配任务 <span class="hint" id="unknownSummary"></span></h3>
+          <span class="grow"></span>
+          <button class="xs" id="btnUnknownRefresh">刷新</button>
+        </header>
+        <div class="hint" style="margin:2px 0 8px;color:var(--ink-3);font-size:12px">
+          这些任务上游已经在下发，但面板还没有对应的自动动作，所以「扫描待办 / 执行全部待办」都不会处理它们。
+          红色 = 已达标未领（奖励领不到，优先适配）；黄色 = 新任务，进度还没到；灰色 = 需真人操作或已忽略。
+        </div>
+        <div id="unknownList"></div>
       </div>
     </section>
 

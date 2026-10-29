@@ -85,6 +85,7 @@ func (p *Panel) tasksScanAll(w http.ResponseWriter, r *http.Request) {
 			if tasks, err := p.cfg.Upstream.ListTasks(a); err != nil {
 				it.GrowthErr = err.Error()
 			} else {
+				p.watchState().note(uid, tasks) // 未适配任务雷达（taskwatch.go）
 				for _, t := range tasks {
 					if growthPending(t) {
 						it.Growth = append(it.Growth, t)
@@ -95,6 +96,7 @@ func (p *Panel) tasksScanAll(w http.ResponseWriter, r *http.Request) {
 			// 仅在 mp 头列表下发，与默认口径不重叠——合并进待办列表；mp 列表失败
 			// 静默（无 mp 任务的部署/活动结束时零影响）。
 			if mpTasks, err := p.cfg.Upstream.ListTasksMP(a); err == nil {
+				p.watchState().note(uid, mpTasks)
 				seen := map[string]bool{}
 				for _, t := range it.Growth {
 					seen[t.TaskCode] = true
@@ -222,16 +224,12 @@ func (p *Panel) startGrowthQueue(concurrency int, growth bool) (started bool, to
 			if a.IsGlobal() {
 				return
 			}
-			// 企业版门控：同上（企业版无个人成长体系，任务端点上游一律 403）。
-			// 企业切换会话（token_source=enterprise_switch）同跳：任务列表读得到，
-			// 但执行后行为事件被上游静默丢弃（200 不计分）——每项都是零收益白跑
-			// （含 expert_5 等真实对话配额），故不入队并给出重登指引（见
-			// auth.IsEnterpriseSession）。
+			// 企业版门控：企业版无个人成长体系，任务端点上游一律 403。
+			// 注意**只看 enterpriseId**：JWT 里的 token_source=enterprise_switch 只描述
+			// 凭证的来路（浏览器当时停在企业空间），不代表账号是企业版——真机 A/B 已证伪
+			// 它会影响 /v2/report 计分（同类项目 WorkBuddy-Daily / misakano 分支同样结论），
+			// 早先据此跳过会导致个人号任务永远入不了队。
 			if a.IsEnterprise() {
-				return
-			}
-			if a.IsEnterpriseSession() {
-				log.Printf("panel: WARN 队列跳过 uid=%s nickname=%q：凭证为企业切换会话（token_source=enterprise_switch），成长任务行为事件会被上游静默丢弃；请移除该账号，在浏览器退出企业切换（个人身份）后重新登录", a.UID, a.Nickname)
 				return
 			}
 			if growth {

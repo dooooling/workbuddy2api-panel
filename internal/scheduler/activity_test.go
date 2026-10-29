@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -579,14 +581,20 @@ func TestRunActivityNowGlobalErrorDoesNotSkipCN(t *testing.T) {
 	}
 }
 
-// TestCheckinStillSkipsGlobal 回归护栏：本次只放开活跃上报，签到仍跳过 global
-// （上游 a190252 明确「checkin/travel 门控不动」）。误删该 gate 会让国际版去打
-// CN 专属签到端点。
+// TestCheckinStillSkipsGlobal 回归护栏：签到仍跳过 global（上游 a190252 明确
+// 「checkin/travel 门控不动」），误删该 gate 会让国际版去打 CN 专属签到端点。
+//
+// 注意：本用例只断言**签到端点**没被调用。签到排程末尾会跑连登管家，而连登对 global
+// 是放开的历史新语义（见 TestStreakBonusIncludesGlobal），会额外产生 growth 域请求，
+// 不能再按「零上游调用」断言。
 func TestCheckinStillSkipsGlobal(t *testing.T) {
 	withGlobalSwitch(t)
-	var hits atomic.Int32
+	var mu sync.Mutex
+	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
 		w.Write([]byte(`{"code":0,"data":{}}`))
 	}))
 	defer srv.Close()
@@ -605,7 +613,56 @@ func TestCheckinStillSkipsGlobal(t *testing.T) {
 
 	s.RunCheckinNow()
 
-	if n := hits.Load(); n != 0 {
-		t.Errorf("checkin global 上游调用=%d want 0（签到仍应跳过 global）", n)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		if strings.Contains(p, "daily-checkin") {
+			t.Errorf("checkin 不该对 global 打签到端点，实际请求=%v", paths)
+			return
+		}
+	}
+}
+
+// TestStreakBonusIncludesGlobal 连登管家不跳过 global：
+// 国际站活跃上报会点亮连登（生产实测 days=6），因此档位兑换/抽奖也应照常尝试——
+// 未解锁时上游 403，streakBonusAccount 只记一行日志、幂等无副作用。
+// 历史门控（D4「global 无 CN 任务体系」）会让连登到 7 天也永远不兑换。
+func TestStreakBonusIncludesGlobal(t *testing.T) {
+	withGlobalSwitch(t)
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer srv.Close()
+
+	p := pool.New("")
+	p.Add(globalAccount(t, "g1"))
+	up := &upstream.Client{
+		HTTP:              srv.Client(),
+		GlobalEnabled:     true,
+		ChatBaseCN:        srv.URL,
+		BillingBaseCN:     srv.URL,
+		ChatBaseGlobal:    srv.URL,
+		BillingBaseGlobal: srv.URL,
+	}
+	s := New(Config{Pool: p, Upstream: up})
+
+	s.RunStreakBonusNow()
+
+	mu.Lock()
+	defer mu.Unlock()
+	hit := false
+	for _, p := range paths {
+		if strings.Contains(p, "/activity/growth/streak") {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Errorf("连登管家应对 global 发起 /activity/growth/streak，实际请求=%v", paths)
 	}
 }

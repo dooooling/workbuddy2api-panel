@@ -26,11 +26,11 @@ func (s *Scheduler) RunStreakBonusNow() {
 		if a == nil || a.AccessTokenValue() == "" {
 			continue
 		}
-		if a.IsGlobal() {
-			continue // D4 门控：global 无 CN 任务体系，不发起任何上游调用
-		}
-		if a.IsEnterpriseSession() {
-			continue // 企业版 / 企业切换会话门控：无成长体系（/activity/growth/streak 企业号 403；切换会话 200 但不计分）
+		// 企业版跳过：growth 端点对企业号 403。
+		// global **不再跳过**：活跃上报在国际站能点亮连登（实测 days=6），growth 端点按
+		// realm 走 workbuddy.ai，档位兑换/抽奖幂等（未解锁 403 只记一行日志）。
+		if a.IsEnterprise() {
+			continue
 		}
 		s.streakBonusAccount(a)
 	}
