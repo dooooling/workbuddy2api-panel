@@ -50,6 +50,10 @@ type Config struct {
 	BlackcatDisabled bool
 	// GrowthDisabled 显式关闭成长任务自动排程（schedule.growth_enabled=false）。
 	GrowthDisabled bool
+	// BlindboxDisabled 显式关闭「开盲盒」（schedule.blindbox_enabled=false）。
+	// 盲盒挂在连登管家末尾、消耗账号能量（每次 10），关掉后能量只攒不花——
+	// 留给用户自己决定何时开（例如等新伙伴池上线）。
+	BlindboxDisabled bool
 
 	// IncludeDisabledInTasks 让「保号类」四任务（签到 / 活跃上报 / token 保活 / 余额刷新）
 	// 对已禁用（disabled）的账号也执行（schedule.include_disabled_in_tasks）。
@@ -172,6 +176,21 @@ func (s *Scheduler) SetIncludeDisabledInTasks(v bool) {
 	s.schedMu.Lock()
 	s.cfg.IncludeDisabledInTasks = v
 	s.schedMu.Unlock()
+}
+
+// SetBlindboxEnabled 开/关「自动开盲盒」（schedule.blindbox_enabled，缺省开）。
+// 与 SetIncludeDisabledInTasks 同款：独立 setter，不并入 12 个位置参数的 Reconfigure。
+func (s *Scheduler) SetBlindboxEnabled(v bool) {
+	s.schedMu.Lock()
+	s.cfg.BlindboxDisabled = !v
+	s.schedMu.Unlock()
+}
+
+// blindboxEnabled 读取当前开关（schedMu 保护，热更新即时生效）。
+func (s *Scheduler) blindboxEnabled() bool {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return !s.cfg.BlindboxDisabled
 }
 
 func (s *Scheduler) Reconfigure(checkinHours, travelHours, activityHours, keepaliveHours, blackcatHours, growthHours []int,

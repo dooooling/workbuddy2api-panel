@@ -76,6 +76,8 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 		log.Printf("streak-bonus %s: ★ 兑换 %s 档（+%dc +%de 卡×%d 抽奖×%d）",
 			a.UID, tier.Tier, tier.Credit, tier.Energy, tier.Cards, tier.Chances)
 	}
+	// 开盲盒：兑换刚发的能量要立刻用掉（每次 10，单次上限由上游 max_open_count 给）。
+	s.openBlindboxes(a)
 	// 抽奖：按当前 chances 全抽完（兑换刚发的次数已在服务端累加）。
 	chances, err := s.cfg.Upstream.LotteryChances(a)
 	if err != nil {
@@ -140,4 +142,92 @@ func (s *Scheduler) makeupYesterday(a *auth.Auth) {
 		return
 	}
 	log.Printf("streak-bonus %s: ★ 已用补签卡补签 %s（保连登）", logfmt.Label(a.UID, a.Nickname), yesterday)
+}
+
+// ---------------------------------------------------------------------------
+// 开盲盒
+// ---------------------------------------------------------------------------
+
+const (
+	// blindboxMaxRounds 单轮最多开几批（每批 ≤ 上游 max_open_count）。兜底防上游
+	// affordable 恒正时死循环；实测单号能量远小于 5×5×10。
+	blindboxMaxRounds = 8
+	// blindboxDefaultCost 上游没给 cost_per_open 时的兜底单价（实测 10）。
+	blindboxDefaultCost = 10
+	// blindboxDefaultMax 上游没给 max_open_count 时的兜底单批上限（实测 5）。
+	blindboxDefaultMax = 5
+)
+
+// openBlindboxes 用能量开盲盒：查配额 → 按 affordable 分批开 → 直到能量不够。
+//
+// 语义：
+//   - 能量不足（affordable<=0 且余额 < 单价）直接静默返回：绝大多数账号常态如此；
+//   - 每批数量取 min(affordable, max_open_count)，开完再查一次配额，直到开不动；
+//   - 业务错误只记一行（不重试），避免上游异常时每轮刷屏。
+//
+// 2026-10-29 实测：GET energy/quota + POST buddy/open 三端点在本网关出站口径下均可用，
+// 单次 10 能量，单批上限 5，返回 results[].template.name（R/SR/UR 伙伴）。
+func (s *Scheduler) openBlindboxes(a *auth.Auth) {
+	if !s.blindboxEnabled() {
+		return // schedule.blindbox_enabled=false：能量只攒不花
+	}
+	total := 0
+	var names []string
+	for round := 0; round < blindboxMaxRounds; round++ {
+		q, err := s.cfg.Upstream.BlindboxQuotaNow(a)
+		if err != nil {
+			// 配额接口失败不影响主流程（有些账号没有伙伴体系）；首轮才记一行。
+			if round == 0 {
+				log.Printf("streak-bonus %s: 盲盒配额: %v", logfmt.Label(a.UID, a.Nickname), err)
+			}
+			return
+		}
+		cost := q.CostPerOpen
+		if cost <= 0 {
+			cost = blindboxDefaultCost
+		}
+		n := q.Affordable
+		if n <= 0 {
+			// 上游没算 affordable 时按能量本地推导。
+			n = q.Balance / cost
+		}
+		if n <= 0 {
+			break
+		}
+		perCall := q.MaxOpenCount
+		if perCall <= 0 {
+			perCall = blindboxDefaultMax
+		}
+		if n > perCall {
+			n = perCall
+		}
+		res, err := s.cfg.Upstream.OpenBlindbox(a, n)
+		if err != nil {
+			if total == 0 {
+				log.Printf("streak-bonus %s: 开盲盒: %v", logfmt.Label(a.UID, a.Nickname), err)
+			}
+			return
+		}
+		total += res.Count
+		for _, p := range res.Results {
+			if p.Template.Name != "" {
+				names = append(names, p.Template.Name)
+			}
+		}
+		if res.Count <= 0 {
+			break
+		}
+	}
+	if total > 0 {
+		shown := names
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		suffix := ""
+		if len(names) > len(shown) {
+			suffix = "…"
+		}
+		log.Printf("streak-bonus %s: 🎁 开盲盒 ×%d：%s%s",
+			logfmt.Label(a.UID, a.Nickname), total, strings.Join(shown, "、"), suffix)
+	}
 }

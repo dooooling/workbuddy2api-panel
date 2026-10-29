@@ -172,9 +172,13 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 </details>
 
-### 连登兑换与抽奖（自动）
+### 连登兑换、抽奖与开盲盒（自动）
 
 成长中心连登档位（连续登录 7/14/28 天）兑换后发放积分 / 能量 / 补签卡 / **抽奖次数**，抽奖次数只能从兑换获得。网关把它挂在每日签到排程末尾自动跑闭环（见[定时任务](#定时任务)）：档位解锁当天自动兑换、有抽奖次数自动抽完，全程无需人工盯。
+
+同一段还会**自动开盲盒**（伙伴 gacha）：兑换刚发的能量立刻用掉——`GET /activity/growth/buddy/quota` 拿当前可开次数，`POST /activity/growth/buddy/open {"count":N}` 分批开（每次消耗 10 能量，单批上限取上游 `max_open_count`，实测 5），直到能量不够为止；日志记「🎁 开盲盒 ×N：斜杠喵、甜心喵…」。能量不足时完全静默，不刷日志。
+
+> 抽奖接口当前被上游整体关闭（`code=400 msg=lottery disabled`），网关按活动状态静默收口并保留已发次数，等上游重开自动补抽。
 
 ## 🆚 与上游的差异
 
@@ -412,6 +416,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `schedule.activity_enabled` | `true` | 活跃上报总开关 |
 | `schedule.keepalive_enabled` | `true` | token 保活总开关 |
 | `schedule.blackcat_enabled` | `true` | 夜猫子总开关 |
+| `schedule.blindbox_enabled` | `true` | 自动开盲盒：连登管家末尾用能量换伙伴（每次 10 能量，单批上限取上游 `max_open_count`）。`false` = 能量只攒不花（例如等新伙伴池上线再手动开）；面板配置页可改，热生效 |
 | `schedule.include_disabled_in_tasks` | `false` | 让**保号类**四任务（签到 / 活跃上报 / token 保活 / 余额刷新）对**已禁用**账号也执行——「禁用」只关选号，不停保号。`false`（默认）保持「禁用的跳过」 |
 | `upstream.timeout_seconds` | `120` | 短 RPC（刷新 / 签到 / 余额 / 模型列表）总时长上限 |
 | `upstream.header_timeout_seconds` | 回落 `timeout_seconds` | 聊天首字节前（响应头）上限 |
