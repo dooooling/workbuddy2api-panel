@@ -8,11 +8,14 @@ package scheduler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。
@@ -82,6 +85,16 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	for i := 0; i < chances; i++ {
 		raw, err := s.cfg.Upstream.LotteryDraw(a)
 		if err != nil {
+			// 「lottery disabled」是上游把抽奖整体关了的活动状态（2026-10 实测），
+			// 不是故障：兑换拿到的次数会留在账号上，等上游重开再抽。按业务状态
+			// 静默收口，否则每轮签到都为每个号刷一条错误。
+			if isLotteryDisabled(err) {
+				if i == 0 {
+					log.Printf("streak-bonus %s: 抽奖暂未开放（上游 lottery disabled），已保留 %d 次机会",
+						logfmt.Label(a.UID, a.Nickname), chances)
+				}
+				return
+			}
 			log.Printf("streak-bonus %s: draw: %v", logfmt.Label(a.UID, a.Nickname), err)
 			return
 		}
@@ -90,6 +103,15 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	if chances > 0 {
 		log.Printf("streak-bonus %s: 抽奖完成 %d 次", logfmt.Label(a.UID, a.Nickname), chances)
 	}
+}
+
+// isLotteryDisabled 判断抽奖是否被上游整体关闭（code=400 / msg "lottery disabled"）。
+func isLotteryDisabled(err error) bool {
+	var ue *upstream.Error
+	if errors.As(err, &ue) {
+		return strings.Contains(strings.ToLower(ue.Msg), "lottery disabled")
+	}
+	return false
 }
 
 // compactJSON 裁剪奖品载荷（日志单行可读）。

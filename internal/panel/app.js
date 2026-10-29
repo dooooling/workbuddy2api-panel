@@ -1676,6 +1676,14 @@ const AUTO_TASKS = {
   'black_cat': '夜猫子：23:00–08:00 窗口内 glm-5.2 对话补足（窗口外提示等 23 点排程）',
   'Expert_lighthouse': '真实轻量云专家召唤+使用链（真实对话 requestId，两账号实测点亮）',
   'skill_1': '真实对话 + skill_info 技能加载事件（实测点亮）',
+  // 2026-10「体验某位专家」5 项（判据同 expert_5，只是换成任务指定的专家）。
+  // 这张表必须与后端 autoActions 同步，漏一项该任务就没有「一键完成」按钮
+  // （TestAppJSAutoTasksCoverBackend 会拦）。
+  'WorkBuddy_Valorant': '专家页搜「无畏契约拼豆专家」→ 召唤 + 真实对话一次（+100c +5e）',
+  'expert_use_maidehao': '召唤「中国电商运营专家」+ 真实对话一次（+50c +5e）',
+  'expert_use_douyinyin': '召唤「抖音策略师」+ 真实对话一次（+50c +5e）',
+  'expert_use_shangjia_xuanchuan': '召唤「商家宣传页与海报设计师」+ 真实对话一次（+50c +5e）',
+  'expert_use_bowangwang': '召唤「直播电商教练」+ 真实对话一次（+50c +5e）',
   'school_season': '校园日（小程序口径）：accept → mini 对话+activityId 上报 → 领奖（+100c+5e）',
   'Sequential_Tasks_1': '小程序首对话（小程序口径）：accept → mini 对话上报 → 领奖（+100c+5e）',
   'Sequential_Tasks_2': '小程序选专家对话（小程序口径）：市场专家 id → accept → expert_actual_use 上报 → 领奖（+200c+5e）',
@@ -1760,7 +1768,7 @@ async function loadTasks() {
       const badge = t.claimed ? '<span class="tag ok">已领取</span>'
         : t.claimable ? '<span class="tag warn">可领取</span>'
         : t.locked ? '<span class="tag mute">未解锁</span>'
-        : t.accept_status === 'accepted' ? '<span class="tag mute">进行中</span>'
+        : t.accept_status === 'accepted' ? '<span class="tag mute" title="已向上游报名，尚未完成（补领清扫只接单、不执行）">已接受</span>'
         : '<span class="tag mute">未接受</span>';
       const acted = t.claimed || t.locked ? ''
         : t.claimable ? '<button class="xs primary" data-t="claim" data-c="' + esc(t.task_code) + '">领取</button>'
