@@ -210,23 +210,20 @@ func (a *Auth) IsGlobal() bool { return a.Realm() == "global" }
 // 无需加锁——Realm() 加锁是因为 realm/Domain 会被 RefreshToken 在锁内改写。
 func (a *Auth) IsEnterprise() bool { return strings.TrimSpace(a.EnterpriseID) != "" }
 
-// IsEnterpriseSession 报告当前凭证是否处于「企业上下文」：
-// 账号本身是企业版（IsEnterprise），或 AccessToken 签发自**企业切换会话**
-// （JWT payload 带 token_source=enterprise_switch——浏览器在企业空间状态下
-// 完成 OAuth 授权时签发）。
+// IsEnterpriseSession 报告当前凭证是否「看起来处于企业上下文」：账号本身是企业版
+// （IsEnterprise），或 AccessToken 签发自企业切换会话（JWT payload 带
+// token_source=enterprise_switch——浏览器停在企业空间时完成 OAuth 授权即带此声明）。
 //
-// 为什么单独一站：企业切换会话与真企业版的上游表现**不同**（实测 2026-10-12，
-// 同一时刻与个人号 A/B 对照）——成长任务列表 / 额度查询 / 领养 Buddy 等**读端点
-// 与直连 API 照常**，但 /v2/report 行为事件**返回 200 却被静默丢弃**（15 个成长
-// 任务全部 0/x，重跑并 90s 内逐 15s 回读进度从不跳动），连登 / 签到同样无效。
-// 即「读得见、记不上账」：不跳过则队列每轮白跑全部任务（含真实对话配额）且
-// 无任何报错。因此行为类任务（活跃上报 / 连登 / 旅行 / 夜猫子 / 成长任务执行）
-// 的门控应使用本方法；签到与任务列表扫描不在此列（签到失败是显式报错，
-// 列表扫描实测可用）。额度查询 / 选号 / 保活照常（按 IsEnterprise 口径）。
+// ⚠️ 不要用它门控任何行为任务。2026-10 的真机 A/B 已证伪「token_source=enterprise_switch
+// ⇒ /v2/report 被静默丢弃」这一早先结论：个人号的 enterpriseId 为空，token_source 只描述
+// 凭证的来路，不构成企业身份（同类项目 WorkBuddy-Daily 的证伪记录、misakano 分支
+// issue #51 的抓包结论一致）。行为类任务（活跃上报 / 连登 / 旅行 / 夜猫子 / 成长任务）
+// 的门控应统一使用 IsEnterprise（只看 enterpriseId）。
 //
-// 每次现解码 JWT 而非 Parse 时缓存：RefreshToken 会整体换发 token，
-// 企业切换状态可能随重新授权翻转，缓存会读到过期形态。解码成本仅一次
-// base64 + 小 JSON（每调度轮每账号数次），可忽略。
+// 本方法保留给「观测/提示」用途（如登录后打一行日志说明凭证来路）。
+//
+// 每次现解码 JWT 而非 Parse 时缓存：RefreshToken 会整体换发 token，企业切换状态可能随
+// 重新授权翻转，缓存会读到过期形态。解码成本仅一次 base64 + 小 JSON，可忽略。
 func (a *Auth) IsEnterpriseSession() bool {
 	if a.IsEnterprise() {
 		return true

@@ -120,6 +120,20 @@ func (p *Panel) sweepAccount(a *auth.Auth, uid string) (res sweepResult) {
 		}
 	}
 
+	// 未适配任务雷达：本轮列表里白名单之外的 code 并入清单（复用同一次拉取，零额外请求）。
+	// 新发现只打一行日志；「达标未领」由 note 内部告警，避免每 15 分钟刷一遍。
+	if fresh := p.watchState().note(uid, tasks); len(fresh) > 0 {
+		titles := make(map[string]string, len(tasks))
+		for _, t := range tasks {
+			if t.TaskCode != "" && t.Title != "" {
+				titles[t.TaskCode] = t.Title
+			}
+		}
+		for _, code := range fresh {
+			log.Printf("panel: 需适配任务：新发现 %s（%q）——面板暂无对应自动动作，详见任务中心「未适配任务」", code, titles[code])
+		}
+	}
+
 	// 阶段一：接受未接受的任务。默认口径与 mp 口径必须**分开提交**（端标记不同，
 	// 混提交会让 mp 任务报 task not found）。
 	var codes, mpCodes []string

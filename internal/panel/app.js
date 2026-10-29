@@ -366,7 +366,7 @@ function go(v) {
   // 到期提醒卡片：默认可见，进页面即用 overview 快照渲染（零上游请求，随首页统计
   // 每轮刷新）。不再「打开账号池就打上游」——逐账号实时查在账号多时会卡死面板。
   // 完整逐包明细由卡片上的「检查」按钮显式触发（loadPackages/loadExpiry）。
-  if (v === 'taskscenter') reattachQueueView();
+  if (v === 'taskscenter') { reattachQueueView(); loadUnknownTasks(); }
 }
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
 /* 首次进入延到本轮脚本求值之后再 go()。
@@ -533,8 +533,88 @@ async function loadOverview(quiet) {
     // 「检查」之后卡片永远停在那一刻的旧数据。
     const liveFresh = lastPackages && (Date.now() - lastPackagesAt) < EXP_FRESH_MS;
     if ($('expBox') && !liveFresh) renderExpirySnapshot(d);
+    loadUnknownTasks();
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
+
+/* ── 未适配任务提醒（taskwatch.go）─────────────────────────────────────
+   上游新增任务不会通知任何客户端，白名单（autoActions）之外的任务扫描不到、也执行
+   不了，表现是「任务一直在、进度永远 0/1」。这里展示后端检测到的未适配清单：
+   达标未领 = 奖励正在损失（最高优先级），待适配 = 新任务，需人工 = 纯 API 做不了。 */
+let unknownCache = null;
+const UNK_TAG = {
+  claim: ['bad', '达标未领'],
+  pending: ['warn', '待适配'],
+  manual: ['mute', '需人工'],
+  ignored: ['mute', '已忽略'],
+};
+async function loadUnknownTasks() {
+  try {
+    const d = await api('tasks/unknown');
+    unknownCache = d;
+    renderUnknownTasks(d);
+  } catch (e) { /* 附加能力：拿不到就不显示，绝不影响账号池主视图 */ }
+}
+function unkState(x) {
+  if (x.ignored) return 'ignored';
+  if (x.manual) return 'manual';
+  return x.claimable ? 'claim' : 'pending';
+}
+function renderUnknownTasks(d) {
+  const items = (d && d.items) || [];
+  const active = items.filter(x => !x.ignored);
+  const claim = active.filter(x => unkState(x) === 'claim').length;
+  const pending = active.filter(x => unkState(x) === 'pending').length;
+  const manual = active.filter(x => unkState(x) === 'manual').length;
+
+  const banner = $('unknownBanner');
+  if (banner) {
+    if (!claim && !pending) {
+      banner.hidden = true;
+    } else {
+      banner.hidden = false;
+      $('unknownBannerText').textContent = '检测到 ' + (claim + pending) + ' 个未适配任务' +
+        (claim ? '，其中 ' + claim + ' 个已达标未领（奖励领不到）' : '') +
+        (manual ? '；另有 ' + manual + ' 个需人工完成' : '');
+    }
+  }
+  const box = $('unknownBox');
+  if (!box) return;
+  if (!active.length) { box.hidden = true; return; }
+  box.hidden = false;
+  $('unknownSummary').textContent = claim + ' 个达标未领 · ' + pending + ' 个待适配' +
+    (manual ? ' · ' + manual + ' 个需人工' : '');
+  $('unknownList').innerHTML = active.map(x => {
+    const st = unkState(x);
+    const tag = UNK_TAG[st] || UNK_TAG.pending;
+    const prog = x.target > 0 ? (x.max_current || 0) + '/' + x.target : '—';
+    const acc = (x.uids || []).length;
+    return '<div class="unk-row">' +
+      '<span class="unk-tag ' + tag[0] + '">' + tag[1] + '</span>' +
+      '<span class="unk-title">' + esc(x.title || x.task_code) + '</span>' +
+      '<span class="unk-code">' + esc(x.task_code) + '</span>' +
+      '<span class="grow"></span>' +
+      '<span class="unk-prog">' + prog + (acc ? ' · ' + acc + ' 个账号' : '') + '</span>' +
+      (x.manual ? '<span class="unk-code">' + esc(x.manual_note || '') + '</span>' :
+        '<button class="xs ghost" data-unk-ignore="' + esc(x.task_code) + '" title="忽略后不再提醒，仍保留在清单">忽略</button>') +
+      '</div>';
+  }).join('');
+}
+$('btnUnknownGo') && ($('btnUnknownGo').onclick = () => go('taskscenter'));
+$('btnUnknownRefresh') && ($('btnUnknownRefresh').onclick = () => { loadUnknownTasks(); toast('已刷新未适配清单', 'ok'); });
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest && ev.target.closest('[data-unk-ignore]');
+  if (!b) return;
+  b.disabled = true;
+  try {
+    await api('tasks/unknown/ignore', {
+      method: 'POST',
+      body: JSON.stringify({ task_code: b.dataset.unkIgnore, ignored: true }),
+    });
+    toast('已忽略：不再提醒，仍保留在清单里', 'ok');
+    loadUnknownTasks();
+  } catch (e) { toast(e.message, 'err'); b.disabled = false; }
+});
 
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');

@@ -15,8 +15,8 @@
 //   - expert_actual_use（三账号实测）
 //   - Hp_Appearance：appearance/set + appearance_skin_apply 事件（两账号实测）
 //
-// 仍未破解：skill_1（疑似要求真实 Skill 工具调用）。
-// 不做：Expert_lighthouse（需真实连接器授权）、Expert_Philanthropy（真实捐款）。
+// 仍未破解：无（2026-10 的「体验某位专家」五个任务已补齐，见 expertTaskTarget）。
+// 不做：Expert_Philanthropy（真实捐款，服务端校验捐赠回执）。
 //
 // 所有动作幂等：已 claimed/已达标的任务直接跳过，不重复消耗上游配额。
 package panel
@@ -127,6 +127,35 @@ var autoActions = []autoAction{
 		TaskCode: "Expert_lighthouse",
 		Desc:     "真实轻量云专家召唤+使用链（chat 链带 has_expert，已验证：两账号点亮）",
 		run:      runExpertLighthouse,
+	},
+	// 「体验某位专家」类任务（2026-10 官方新上）：判据与 expert_5 同源（召唤链 + 真实对话 +
+	// expert_actual_use），只是把"随便几个专家"换成任务指定的那一位——按 id 在专家列表里认人，
+	// 任务只给名字的（WorkBuddy_Valorant）照官方专家页的搜法按关键词搜。
+	// 生产实测：四个 expert_use_* 一键完成即 1/1 并自动领奖；Valorant 需按名字搜才能找到。
+	{
+		TaskCode: "WorkBuddy_Valorant",
+		Desc:     "在专家页搜索「无畏契约拼豆专家」→ 召唤 + 真实对话一次（+100c +5e）",
+		run:      runExpertTask(expertTaskTarget{Name: "无畏契约拼豆专家"}),
+	},
+	{
+		TaskCode: "expert_use_maidehao",
+		Desc:     "召唤「中国电商运营专家」+ 真实对话一次（+50c +5e）",
+		run:      runExpertTask(expertTaskTarget{ID: "ex_GDl31WahyIH0", Name: "中国电商运营专家"}),
+	},
+	{
+		TaskCode: "expert_use_douyinyin",
+		Desc:     "召唤「抖音策略师」+ 真实对话一次（+50c +5e）",
+		run:      runExpertTask(expertTaskTarget{ID: "ex_FbY5nlWTqDod", Name: "抖音策略师"}),
+	},
+	{
+		TaskCode: "expert_use_shangjia_xuanchuan",
+		Desc:     "召唤「商家宣传页与海报设计师」+ 真实对话一次（+50c +5e）",
+		run:      runExpertTask(expertTaskTarget{ID: "ex_Weo3x2EZuSDm", Name: "商家宣传页与海报设计师"}),
+	},
+	{
+		TaskCode: "expert_use_bowangwang",
+		Desc:     "召唤「直播电商教练」+ 真实对话一次（+50c +5e）",
+		run:      runExpertTask(expertTaskTarget{ID: "ex_WZY136wV5aMt", Name: "直播电商教练"}),
 	},
 	{
 		TaskCode: "black_cat",
@@ -631,13 +660,12 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		return
 	}
-	// 企业上下文门控（企业版 / 企业切换会话）：行为事件会被上游静默丢弃或
-	// 直接 403，执行任何成长任务都是零收益白跑（含真实对话配额）——直接拒绝
-	// 并给出修复路径，不再让用户对着「已上报但进度 0/x」猜原因
-	// （见 auth.IsEnterpriseSession）。
-	if a.IsEnterpriseSession() {
+	// 企业版门控：企业版无个人成长体系，行为事件直接 403，执行任何成长任务都是零收益
+	// 白跑（含真实对话配额）。判定只看 enterpriseId——token_source=enterprise_switch
+	// 只表示凭证的来路，不代表账号企业化（见 taskcenter.go 同处说明）。
+	if a.IsEnterprise() {
 		writeErr(w, http.StatusUnprocessableEntity,
-			"该账号为企业版/企业切换会话（token_source=enterprise_switch），无个人成长体系，成长任务行为事件会被上游忽略；请移除账号后以个人身份重新登录")
+			"该账号是企业版（auth 文件带 enterpriseId），没有个人成长体系；请改用个人账号")
 		return
 	}
 	var body struct {
@@ -1124,6 +1152,118 @@ func runExpertBatch(p *Panel, a *auth.Auth, expertType string, count int) (strin
 }
 
 // ---------------------------------------------------------------------------
+// 「体验某位专家」任务（2026-10 官方新上的一批）
+// ---------------------------------------------------------------------------
+
+// expertTaskTarget 「体验某位专家」任务的目标专家。ID 来自任务跳转链接；Name 用于校验，
+// 也是只给名字的任务（WorkBuddy_Valorant）搜索时用的关键词。
+type expertTaskTarget struct {
+	ID   string
+	Name string
+}
+
+// expertTaskSearchPages 按 id 逐页找专家的页数上限：某页不满一页即最后一页，上限只是兜底，
+// 防止上游分页异常时无限翻页。
+const expertTaskSearchPages = 10
+
+// runExpertTask 生成「体验某位专家」任务的执行函数：认人 → 召唤 → 真实对话 → 使用事件。
+func runExpertTask(target expertTaskTarget) func(p *Panel, a *auth.Auth) (string, error) {
+	return func(p *Panel, a *auth.Auth) (string, error) {
+		e, err := p.findTaskExpert(a, target)
+		if err != nil {
+			return "", err
+		}
+		if err := p.summonAndUseExpert(a, e); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已召唤「%s」并完成一次真实对话", target.Name), nil
+	}
+}
+
+// findTaskExpert 找任务指定的专家。带 id 的在专家列表（单专家，按推荐排序）里逐页找；
+// 列表里翻不到也照样按 id 召唤——版本号缺省 1.0.0、分类缺省 all，与列表缺字段时同款兜底。
+// 只有名字的走搜索（见 searchTaskExpert）。
+func (p *Panel) findTaskExpert(a *auth.Auth, target expertTaskTarget) (upstream.MarketExpert, error) {
+	if target.ID == "" {
+		return p.searchTaskExpert(a, target.Name)
+	}
+	for page := 1; page <= expertTaskSearchPages; page++ {
+		experts, err := p.cfg.Upstream.MarketExpertListPage(a, "agent", page)
+		if err != nil {
+			break
+		}
+		for _, e := range experts {
+			if e.ExpertID == target.ID {
+				return e, nil
+			}
+		}
+		if len(experts) < upstream.MarketExpertPageSize {
+			break
+		}
+	}
+	return upstream.MarketExpert{
+		ExpertID: target.ID, ExpertType: "agent",
+		DisplayNameZH: target.Name, ProfessionZH: target.Name,
+	}, nil
+}
+
+// searchTaskExpert 照任务说明「在专家页搜索某位专家」：先报 expert_search 事件（判据之一），
+// 再在单专家页签搜；没搜到就去掉页签再搜一次（官方对话框里选专家时的搜法）。名字或职业名
+// 与任务里的一致才算命中，两次都没有直接报错——绝不拿别的专家凑数（会白耗一次真实对话）。
+func (p *Panel) searchTaskExpert(a *auth.Auth, name string) (upstream.MarketExpert, error) {
+	experts, err := p.cfg.Upstream.MarketExpertSearch(a, "agent", name)
+	if err != nil {
+		return upstream.MarketExpert{}, fmt.Errorf("搜索专家: %w", err)
+	}
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSearchEvent(name, len(experts))); err != nil {
+		return upstream.MarketExpert{}, fmt.Errorf("搜索事件: %w", err)
+	}
+	e, ok := expertNamed(experts, name)
+	if !ok {
+		all, serr := p.cfg.Upstream.MarketExpertSearch(a, "", name)
+		if serr != nil {
+			return upstream.MarketExpert{}, fmt.Errorf("搜索专家: %w", serr)
+		}
+		if e, ok = expertNamed(all, name); !ok {
+			return upstream.MarketExpert{}, fmt.Errorf("在专家页搜「%s」没有找到（活动可能已结束），未召唤其他专家", name)
+		}
+	}
+	time.Sleep(expertSummonGap)
+	return e, nil
+}
+
+// expertNamed 按名字认专家：显示名或职业名去掉两端空白后与 name 相同。
+func expertNamed(experts []upstream.MarketExpert, name string) (upstream.MarketExpert, bool) {
+	for _, e := range experts {
+		if strings.TrimSpace(e.DisplayNameZH) == name || strings.TrimSpace(e.ProfessionZH) == name {
+			return e, true
+		}
+	}
+	return upstream.MarketExpert{}, false
+}
+
+// summonAndUseExpert 召唤链 + 真实对话 + 使用事件（expert_5 系列与「体验某位专家」共用）。
+func (p *Panel) summonAndUseExpert(a *auth.Auth, e upstream.MarketExpert) error {
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopExpertSummonSequence(e)...); err != nil {
+		return fmt.Errorf("召唤事件: %w", err)
+	}
+	conv, req, err := p.cfg.Upstream.DesktopChatWithExpert(a, e.ExpertID)
+	if err != nil {
+		return fmt.Errorf("专家对话: %w", err)
+	}
+	msgID := "msg-" + req
+	if len(req) > 8 {
+		msgID = "msg-" + req[len(req)-8:]
+	}
+	events := append(upstream.DesktopChatSequence(conv, req, msgID, "fast-model", "fast-model"),
+		upstream.DesktopExpertActualUseEvent(e, conv, req))
+	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
+		return fmt.Errorf("使用事件: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // 全量自动完成
 // ---------------------------------------------------------------------------
 
@@ -1274,12 +1414,11 @@ func (p *Panel) accountTaskAutoAll(w http.ResponseWriter, r *http.Request) {
 	if a == nil {
 		return
 	}
-	// 企业上下文门控：与 accountTaskAuto 同口径（企业版 / 企业切换会话下成长任务
-	// 行为事件被上游静默丢弃，跑全量只会白耗真实对话配额）。「一键完成全部」与
-	// 单任务入口共用同一套动作，必须一并挡上（下游 fork 吸收本 PR 时发现的缺口）。
-	if a.IsEnterpriseSession() {
+	// 企业版门控：与 accountTaskAuto 同口径（只看 enterpriseId；token_source 不作为
+	// 判据）。「一键完成全部」与单任务入口共用同一套动作，必须一并挡上。
+	if a.IsEnterprise() {
 		writeErr(w, http.StatusUnprocessableEntity,
-			"该账号为企业版/企业切换会话（token_source=enterprise_switch），无个人成长体系，成长任务行为事件会被上游忽略；请移除账号后以个人身份重新登录")
+			"该账号是企业版（auth 文件带 enterpriseId），没有个人成长体系；请改用个人账号")
 		return
 	}
 	// per-account 互斥（与单任务动作共用一把锁）：重复点击 409。
