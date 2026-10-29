@@ -492,3 +492,88 @@ func TestTravelDayAlignsCST(t *testing.T) {
 		}
 	}
 }
+
+// globalTravelScheduler 国际版旅行/领养用例的装配：所有域都指向同一个 stub，
+// 避免 global 账号按 realm 路由到真实 workbuddy.ai。
+func globalTravelScheduler(t *testing.T, srv *httptest.Server, uid string) (*Scheduler, *pool.Pool) {
+	t.Helper()
+	p := pool.New("")
+	a := &auth.Auth{UID: uid, AccessToken: "at", RefreshToken: "rt", ExpiresAt: 9999999999}
+	if _, err := auth.BackfillRealmFor(a, "global"); err != nil {
+		t.Fatalf("backfill realm: %v", err)
+	}
+	p.Add(a)
+	up := &upstream.Client{
+		HTTP:              srv.Client(),
+		GlobalEnabled:     true,
+		ChatBaseCN:        srv.URL,
+		BillingBaseCN:     srv.URL,
+		WebBaseCN:         srv.URL,
+		ChatBaseGlobal:    srv.URL,
+		BillingBaseGlobal: srv.URL,
+	}
+	return New(Config{Pool: p, Upstream: up}), p
+}
+
+// TestRunTravelNowAdoptsGlobalBuddy 国际版：无伙伴 → 只走领养（协议 + first），
+// 不查旅行状态、不派出（国际版没有旅行体系）。
+func TestRunTravelNowAdoptsGlobalBuddy(t *testing.T) {
+	fastTravel(t)
+	withGlobalSwitch(t)
+	stub := &travelStub{buddy: "null"}
+	srv := stub.server()
+	defer srv.Close()
+
+	s, _ := globalTravelScheduler(t, srv, "g1")
+	s.RunTravelNow()
+
+	if stub.agreeCalls.Load() != 1 || stub.firstCalls.Load() != 1 {
+		t.Errorf("国际版应尝试领养：agreement=%d first=%d want 1/1",
+			stub.agreeCalls.Load(), stub.firstCalls.Load())
+	}
+	if n := stub.statusCalls.Load(); n != 0 {
+		t.Errorf("国际版不该查旅行状态，status calls=%d", n)
+	}
+	if n := stub.departCalls.Load(); n != 0 {
+		t.Errorf("国际版不该派出，depart calls=%d", n)
+	}
+}
+
+// TestRunTravelNowGlobalWithBuddySilent 已领养的国际版账号：只查一次 buddy/info，
+// 不发任何后续请求（无旅行体系，避免每轮空转）。
+func TestRunTravelNowGlobalWithBuddySilent(t *testing.T) {
+	fastTravel(t)
+	withGlobalSwitch(t)
+	stub := &travelStub{buddy: `{"id":1,"name":"档案喵"}`}
+	srv := stub.server()
+	defer srv.Close()
+
+	s, _ := globalTravelScheduler(t, srv, "g1")
+	s.RunTravelNow()
+
+	if n := stub.infoCalls.Load(); n != 1 {
+		t.Errorf("buddy/info calls=%d want 1", n)
+	}
+	if n := stub.agreeCalls.Load() + stub.firstCalls.Load() + stub.statusCalls.Load() +
+		stub.departCalls.Load() + stub.claimCalls.Load(); n != 0 {
+		t.Errorf("已领养的国际版不该有后续请求，实际=%d", n)
+	}
+}
+
+// TestRunTravelNowGlobalAdoptRetryOncePerDay 前置门槛未达（400）时当天只试一次，
+// 不因每日两次巡检反复撞上游。
+func TestRunTravelNowGlobalAdoptRetryOncePerDay(t *testing.T) {
+	fastTravel(t)
+	withGlobalSwitch(t)
+	stub := &travelStub{buddy: "null", firstStatus: 400}
+	srv := stub.server()
+	defer srv.Close()
+
+	s, _ := globalTravelScheduler(t, srv, "g1")
+	s.RunTravelNow()
+	s.RunTravelNow()
+
+	if n := stub.firstCalls.Load(); n != 1 {
+		t.Errorf("first calls=%d want 1（门槛未达当日只试一次）", n)
+	}
+}

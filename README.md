@@ -180,6 +180,8 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 > 抽奖接口当前被上游整体关闭（`code=400 msg=lottery disabled`），网关按活动状态静默收口并保留已发次数，等上游重开自动补抽。
 
+**国际版（global）账号**没有旅行体系（`travel/status` 返回空对象），网关只对它们做**伙伴领养尝试**：`buddy/info` 查无伙伴 → 同意协议 → `buddy/first`，每天一次（当日门槛未达即收敛）。注意 `buddy/first` 的上游前置是「至少一次对话」，该口径不认网关的代理流量——所以通常要等账号在官方客户端/网页聊过一次后才会自动领养成功，之后能量照常可用于开盲盒。
+
 ## 🆚 与上游的差异
 
 本分支相对 [上游 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证）：
