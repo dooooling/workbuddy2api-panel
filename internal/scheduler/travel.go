@@ -56,11 +56,21 @@ func (s *Scheduler) RunTravelNow() {
 		if a == nil || a.RefreshTokenValue() == "" {
 			continue
 		}
-		if a.IsGlobal() {
-			continue // D4 门控：global 无 CN 任务体系，不发起任何上游调用
-		}
 		if a.IsEnterprise() {
 			continue // 企业版门控：无个人成长体系（growth 端点企业号 403），不发起任何上游调用
+		}
+		if a.IsGlobal() {
+			// 国际版：**只做伙伴领养尝试**，不做出行/领奖。
+			// 2026-10-29 实测（workbuddy.ai）：buddy/info 与 agreement 可用、travel/status
+			// 返回空对象（无旅行体系），而 buddy/first 有前置条件「至少一次对话」——
+			// 该口径不认网关的代理对话，只能等官方客户端聊过一次后自然满足。
+			// 因此每天试一次（adoptTried 幂等），条件满足即自动领养，否则静默重试。
+			if !first {
+				time.Sleep(travelAccountDelay)
+			}
+			first = false
+			s.adoptGlobalIfNeeded(a)
+			continue
 		}
 		if !first {
 			time.Sleep(travelAccountDelay)
@@ -149,7 +159,7 @@ func (s *Scheduler) travelAdopt(a *auth.Auth) {
 	err := s.cfg.Upstream.BuddyFirst(a)
 	switch {
 	case err == nil:
-		log.Printf("travel %s: adopt ok (+300 credits)", logfmt.Label(a.UID, a.Nickname))
+		log.Printf("travel %s: adopt ok (realm=%s)", logfmt.Label(a.UID, a.Nickname), a.Realm())
 	case upstream.IsBuddyTaskIncomplete(err):
 		s.markAdoptTried(a.UID)
 		log.Printf("travel %s: adopt skipped (conversation threshold not reached, retry tomorrow)", logfmt.Label(a.UID, a.Nickname))
@@ -170,4 +180,22 @@ func (s *Scheduler) markAdoptTried(uid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adoptTried[uid] = travelDay(time.Now())
+}
+
+// adoptGlobalIfNeeded 国际版账号的伙伴领养尝试：已有伙伴则静默返回，否则走与国内
+// 同一条 travelAdopt（前置上报 → 同意协议 → buddy/first）。
+//
+// 为什么单独一个入口：国际版没有旅行体系（travel/status 返回空对象），只有伙伴；
+// 而 buddy/first 的前置「至少一次对话」由上游判定，网关推不动——所以这里只负责
+// 「每天试一次」，条件满足那天自动领养，未满足由 travelAdopt 记一行并在当日收敛。
+func (s *Scheduler) adoptGlobalIfNeeded(a *auth.Auth) {
+	buddy, err := s.cfg.Upstream.BuddyInfo(a)
+	if err != nil {
+		log.Printf("travel %s: buddy-info: %v", logfmt.Label(a.UID, a.Nickname), err)
+		return
+	}
+	if buddy != nil {
+		return // 已领养：国际版无旅行体系，无需后续动作
+	}
+	s.travelAdopt(a)
 }
