@@ -1,14 +1,12 @@
 name: docker-ghcr
 
-# 多架构镜像（amd64/arm64）自动构建并发布到 ghcr.io：
-#   - push 到 main / 手动触发 → 构建并推送
+# 多架构镜像（amd64/arm64）构建并发布到 ghcr.io：
+#   - **仅手动触发（workflow_dispatch）才构建并推送**
 #   - PR 触碰构建相关文件 → 仅构建验证，不推送
-#   - 打 v* tag **不触发**本 workflow：发版只发二进制 Release，不重复推镜像
-#     （镜像已随 main 推送更新，tag 只会多出 1.2.3 / 1.2 这类别名）
-# tag 说明：main 推 latest + main + sha-xxxxxx
+#   - push main / 打 v* tag 都**不触发**：日常只发二进制（main 存 artifact、tag 发 Release），
+#     镜像按需手动出（自建镜像源 / 回滚点），避免每次提交都白跑一次 QEMU 多架构构建
+# 手动触发时的 tag：latest + main + sha-xxxxxx
 on:
-  push:
-    branches: [main]
   pull_request:
     paths:
       - "Dockerfile"
