@@ -1519,7 +1519,6 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
-
 // 未适配任务清单的前端渲染：三态标签、计数、需人工说明、空态隐藏。
 // 这张卡片是「上游上了新任务、网关还不会做」唯一可见的出口，渲染错了等于功能不存在。
 func TestAppJSUnknownTasksRender(t *testing.T) {
