@@ -278,7 +278,9 @@ curl -s http://localhost:7863/healthz
 > **首次发布后须将包设为公开**：GitHub 仓库页 → Packages → `workbuddy2api-panel` →
 > Package settings → Change visibility → Public，否则拉取需要 `docker login ghcr.io`。
 >
-> 镜像 tag 规则：`main` 分支推送 `latest` / `main` / `sha-xxxxxx`；**打 `v*` tag 不再触发镜像构建**（发版只发二进制 Release，镜像已随 main 更新）；PR 仅构建验证、不推送。
+> 镜像**仅在手动触发**（Actions → `docker-ghcr` → Run workflow）时才构建并推送，tag 为
+> `latest` / `main` / `sha-xxxxxx`；**push main 与打 `v*` tag 都不触发镜像构建**——日常只发二进制
+> （main 存 artifact、tag 发 Release），镜像按需手动出；PR 仅构建验证、不推送。
 
 ### 方式一：Docker Compose（推荐服务器部署）
 
