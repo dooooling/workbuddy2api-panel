@@ -1612,3 +1612,73 @@ process.stdout.write(JSON.stringify({ backend: be.size, ui: ui.size, missing }))
 	}
 	t.Logf("coverage=%s", got)
 }
+
+// TestAppJSGrowthStatusRender 连登/能量卡片渲染：档位中文、下一档文案、补签卡/能量/伙伴。
+// 这张卡是「连登几天、还差几天到档、能量多少」的唯一面板出口。
+func TestAppJSGrowthStatusRender(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; growth status render test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const start = src.indexOf('let growthAt');
+const end = src.indexOf("$('btnGrowthRefresh')");
+if (start < 0 || end < 0 || end < start) throw new Error('growth status renderer not found');
+const els = {};
+const host = id => (els[id] = els[id] || { innerHTML: '', textContent: '', hidden: false });
+const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const ctx = { Date, Number, String, Math, JSON, Array, Object, console, $: id => host(id), esc };
+vm.createContext(ctx);
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.renderGrowthStatus=renderGrowthStatus;', ctx);
+ctx.renderGrowthStatus({ updated_at: 1793000000, items: [
+  { uid: 'uid-aaaa-bbbb', nickname: '135****2124', realm: 'cn', days: 8, month_total: 16,
+    next_tier: '14d', next_tier_remaining: 6, tier_7d: 'claimed', tier_14d: 'locked', tier_28d: 'locked',
+    makeup_cards: 1, makeup_cards_max: 4, energy: 103, buddy: '甜心喵' },
+  { uid: 'uid-cccc-dddd', nickname: 'g@x.com', realm: 'global', error: '企业版无个人成长体系' },
+]});
+const html = els.growthBody.innerHTML;
+process.stdout.write(JSON.stringify({
+  rows: (html.match(/<tr>/g) || []).length,
+  hasTier: html.indexOf('已兑换 / 未解锁 / 未解锁') >= 0,
+  hasNext: html.indexOf('14d 还差 6 天') >= 0,
+  hasCards: html.indexOf('>1/4<') >= 0,
+  hasEnergy: html.indexOf('>103<') >= 0,
+  hasBuddy: html.indexOf('甜心喵') >= 0,
+  hasErr: html.indexOf('企业版无个人成长体系') >= 0,
+  hasNote: els.growthNote.textContent.length > 0,
+}));`
+	f, err := os.CreateTemp(t.TempDir(), "growth-render-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("growth status render node test failed: %v\n%s", err, out)
+	}
+	want := `{"rows":2,"hasTier":true,"hasNext":true,"hasCards":true,"hasEnergy":true,"hasBuddy":true,"hasErr":true,"hasNote":true}`
+	if got := strings.TrimSpace(string(out)); got != want {
+		t.Fatalf("growth status render=%s want %s", got, want)
+	}
+}
+
+// TestPanelIndexGrowthCard 面板骨架必须含「连登与能量」卡与「立即活跃上报」按钮：
+// 入口藏在自己隐藏的卡片里是 issue #137 那类死锁的根源，这里钉住 id 存在。
+func TestPanelIndexGrowthCard(t *testing.T) {
+	b, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{`id="growthBody"`, `id="btnActivityAll"`, `id="btnGrowthRefresh"`, `id="growthNote"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("index.html 缺少 %s", want)
+		}
+	}
+}

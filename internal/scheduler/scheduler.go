@@ -597,18 +597,29 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 // checkActivityStreak 上报成功后回读连登天数（只读 oracle，发现静默失败）。
 // 背景：REPORT-active-map.md §2 实测「上报 200 但静默丢弃」（缺 userId 时 progress 不动），
 // 上报 200 ≠ streak 计分——需要回读验证闭环。
-// 异常检测口径：days==0 → warn（report OK but streak.days=0 (silent drop?)）；
+// 异常检测口径：days==0 → 先等一次结算再判 warn（上游对部分账号异步结算，
+// 立刻回读会读到旧值——2026-10-30 实测：3426823 上报后立刻读到 7，稍后回读为 8）；
 // GET 失败 → warn 但不影响主流程（上报本身已成功，按天幂等，不做重试）。
 // 日志每号一行、一眼可 grep：`activity %s: streak days=%d`（成功也打，方便对账）。
-// 返回 true 表示「上报 OK 但 streak 可疑」（days==0 或回读失败），供测试断言。
+// 返回 true 表示「上报 OK 但 streak 可疑」（重试后仍为 0，或回读失败），供测试断言。
 func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 	days, err := s.cfg.Upstream.GrowthStreak(a)
 	if err != nil {
 		log.Printf("activity %s: streak check failed (report OK): %v", logfmt.Label(a.UID, a.Nickname), err)
 		return true
 	}
+	// 结算滞后：读到 0 时再等一轮（最多 activityStreakRetries 次），避免把"还没结算"
+	// 误报成"事件被静默丢弃"（后者才需要人介入）。
+	for i := 0; days == 0 && i < activityStreakRetries; i++ {
+		if activityStreakSettle > 0 {
+			time.Sleep(activityStreakSettle)
+		}
+		if d, rerr := s.cfg.Upstream.GrowthStreak(a); rerr == nil {
+			days = d
+		}
+	}
 	if days == 0 {
-		log.Printf("activity %s: report OK but streak.days=0 (silent drop?)", logfmt.Label(a.UID, a.Nickname))
+		log.Printf("activity %s: report OK but streak.days=0 after %d retries (可能未结算，或事件被上游丢弃)", logfmt.Label(a.UID, a.Nickname), activityStreakRetries)
 		return true
 	}
 	log.Printf("activity %s: streak days=%d", logfmt.Label(a.UID, a.Nickname), days)

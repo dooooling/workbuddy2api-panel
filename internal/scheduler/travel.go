@@ -28,6 +28,14 @@ var travelAccountDelay = 800 * time.Millisecond
 // activityAccountDelay 活跃上报账号间限速：与旅行同口径，避免上游风控。测试可置 0。
 var activityAccountDelay = 800 * time.Millisecond
 
+// activityStreakSettle / activityStreakRetries 连登回读的结算等待与重试次数：
+// 上游对部分账号异步结算（2026-10-30 实测 3426823 上报后立刻读到 7、稍后回读为 8），
+// 立刻回读会把"还没结算"误判成"事件被丢弃"。测试可把 settle 置 0。
+var (
+	activityStreakSettle  = 1500 * time.Millisecond
+	activityStreakRetries = 2
+)
+
 // adoptReportGap 领养前置上报后的等待：给上游事件处理留时间再发 buddy/first。
 // 对齐 scripts/task_first_buddy.py 实测的 1.05s 间隔口径。测试可置 0。
 var adoptReportGap = 1050 * time.Millisecond

@@ -22,6 +22,9 @@ func fastActivity(t *testing.T) {
 	old := activityAccountDelay
 	activityAccountDelay = 0
 	t.Cleanup(func() { activityAccountDelay = old })
+	oldSettle := activityStreakSettle
+	activityStreakSettle = 0
+	t.Cleanup(func() { activityStreakSettle = oldSettle })
 }
 
 // reportStub 记录 /v2/report 调用次数与 userId。
