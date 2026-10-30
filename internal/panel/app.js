@@ -534,6 +534,8 @@ async function loadOverview(quiet) {
     const liveFresh = lastPackages && (Date.now() - lastPackagesAt) < EXP_FRESH_MS;
     if ($('expBox') && !liveFresh) renderExpirySnapshot(d);
     loadUnknownTasks();
+    // 连登/能量：后端 60s 缓存，这里再节流一次，避免首页 5s 轮询每次都发请求。
+    if (Date.now() - growthAt > 60000) loadGrowthStatus(false);
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
@@ -614,6 +616,60 @@ document.addEventListener('click', async ev => {
     toast('已忽略：不再提醒，仍保留在清单里', 'ok');
     loadUnknownTasks();
   } catch (e) { toast(e.message, 'err'); b.disabled = false; }
+});
+
+/* ── 连登与能量（growthstatus.go）─────────────────────────────────────
+   连登天数只有成长中心网页看得到，而它由每日 10:00 的活跃上报点亮——这里把它和
+   档位/补签卡/盲盒能量/伙伴聚到一张表，并提供「立即活跃上报」当场点亮当天连登。 */
+let growthAt = 0;
+async function loadGrowthStatus(force) {
+  try {
+    const d = await api('growth_status' + (force ? '?refresh=1' : ''));
+    growthAt = Date.now();
+    renderGrowthStatus(d);
+  } catch (e) { /* 附加能力：拿不到就不渲染，不影响账号池 */ }
+}
+function growthTier(s) {
+  if (s === 'claimed') return '已兑换';
+  if (s === 'locked') return '未解锁';
+  return s || '—';
+}
+function renderGrowthStatus(d) {
+  const tb = $('growthBody');
+  if (!tb) return;
+  const items = (d && d.items) || [];
+  if (!items.length) {
+    tb.innerHTML = '<tr><td colspan="7"><div class="empty">暂无账号</div></td></tr>';
+    return;
+  }
+  tb.innerHTML = items.map(it => {
+    const err = it.error ? '<div class="hint" style="color:var(--bad);font-size:11.5px">' + esc(it.error) + '</div>' : '';
+    const next = it.next_tier ? it.next_tier + ' 还差 ' + it.next_tier_remaining + ' 天' : '—';
+    return '<tr><td class="who"><div class="nm">' + esc(it.nickname || it.uid) + '</div>' +
+      '<div class="id">' + esc((it.realm || '') + ' · ' + String(it.uid).slice(0, 8)) + '</div>' + err + '</td>' +
+      '<td class="num">' + (it.error ? '—' : it.days) + '</td>' +
+      '<td>' + esc(next) + '</td>' +
+      '<td>' + esc(growthTier(it.tier_7d)) + ' / ' + esc(growthTier(it.tier_14d)) + ' / ' + esc(growthTier(it.tier_28d)) + '</td>' +
+      '<td class="num">' + (it.error ? '—' : it.makeup_cards + '/' + it.makeup_cards_max) + '</td>' +
+      '<td class="num">' + (it.error ? '—' : it.energy) + '</td>' +
+      '<td>' + esc(it.buddy || '—') + '</td></tr>';
+  }).join('');
+  if ($('growthNote')) {
+    const t = d && d.updated_at ? new Date(d.updated_at * 1000).toLocaleTimeString() : '';
+    $('growthNote').textContent = t + (d && d.stale ? '（旧）' : '');
+  }
+}
+$('btnGrowthRefresh') && ($('btnGrowthRefresh').onclick = () => { loadGrowthStatus(true); toast('已刷新连登数据', 'ok'); });
+$('btnActivityAll') && ($('btnActivityAll').onclick = async () => {
+  const b = $('btnActivityAll');
+  b.disabled = true;
+  const old = b.textContent;
+  b.textContent = '上报中…';
+  try {
+    await api('activity_all', { method: 'POST' });
+    toast('已触发活跃上报，约 10 秒后连登天数更新', 'ok');
+    setTimeout(() => loadGrowthStatus(true), 12000);
+  } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; b.textContent = old; }
 });
 
 $('accBody').addEventListener('click', async ev => {

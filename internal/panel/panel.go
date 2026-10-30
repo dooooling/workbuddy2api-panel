@@ -102,6 +102,9 @@ type Panel struct {
 	// 未适配任务检测（taskwatch.go）：上游下发但 autoActions 里没有实现的动作。
 	watchOnce sync.Once
 	watch     *taskWatch
+
+	// 连登/能量快照缓存（growthstatus.go）：60s TTL，避免首页轮询把上游打满。
+	growthCache growthStatusCache
 }
 
 // tryLockAccount 尝试锁定账号的任务执行；已在执行返回 false。
@@ -189,6 +192,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/tasks/scan_all", p.withAuth(p.tasksScanAll))
 	p.mux.HandleFunc("POST /panel/api/tasks/run_queue", p.withAuth(p.tasksRunQueue))
 	p.mux.HandleFunc("GET /panel/api/tasks/queue", p.withAuth(p.tasksQueueStatus))
+	p.mux.HandleFunc("GET /panel/api/growth_status", p.withAuth(p.growthStatus))
 	p.mux.HandleFunc("GET /panel/api/tasks/unknown", p.withAuth(p.tasksUnknown))
 	p.mux.HandleFunc("POST /panel/api/tasks/unknown/ignore", p.withAuth(p.taskUnknownIgnore))
 	p.mux.HandleFunc("GET /panel/api/school/vouchers", p.withAuth(p.schoolVouchers))
