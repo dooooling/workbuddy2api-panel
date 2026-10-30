@@ -1681,3 +1681,29 @@ func TestPanelIndexGrowthCard(t *testing.T) {
 		}
 	}
 }
+
+// TestPanelIndexAccountTableFirst 账号池视图的**第一屏必须是账号表**：
+// 连登/能量卡是补充信息，不能插在账号表前面（否则积分列被挤到折叠线下，
+// 用户会以为"不显示积分了"）；同时 btnActivityAll 只能有一个——重复 id 会让
+// $() 取到第一个，表头那颗按钮的 handler 被覆盖成死的。
+func TestPanelIndexAccountTableFirst(t *testing.T) {
+	b, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	acc := strings.Index(s, `id="accBody"`)
+	grow := strings.Index(s, `id="growthBox"`)
+	if acc < 0 || grow < 0 {
+		t.Fatalf("缺少 accBody(%d)/growthBox(%d)", acc, grow)
+	}
+	if grow < acc {
+		t.Error("growthBox 必须在账号表 accBody 之后（否则账号表被挤到下面）")
+	}
+	if n := strings.Count(s, `id="btnActivityAll"`); n != 1 {
+		t.Errorf("btnActivityAll 出现 %d 次，必须恰好 1 次（重复 id 会让表头按钮失效）", n)
+	}
+	if n := strings.Count(s, `id="btnGrowthRefresh"`); n != 1 {
+		t.Errorf("btnGrowthRefresh 出现 %d 次，必须恰好 1 次", n)
+	}
+}

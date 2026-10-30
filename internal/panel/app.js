@@ -660,17 +660,6 @@ function renderGrowthStatus(d) {
   }
 }
 $('btnGrowthRefresh') && ($('btnGrowthRefresh').onclick = () => { loadGrowthStatus(true); toast('已刷新连登数据', 'ok'); });
-$('btnActivityAll') && ($('btnActivityAll').onclick = async () => {
-  const b = $('btnActivityAll');
-  b.disabled = true;
-  const old = b.textContent;
-  b.textContent = '上报中…';
-  try {
-    await api('activity_all', { method: 'POST' });
-    toast('已触发活跃上报，约 10 秒后连登天数更新', 'ok');
-    setTimeout(() => loadGrowthStatus(true), 12000);
-  } catch (e) { toast(e.message, 'err'); } finally { b.disabled = false; b.textContent = old; }
-});
 
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
@@ -721,8 +710,11 @@ $('btnTravelAll').onclick = async () => {
   catch (e) { toast(e.message, 'err'); }
 };
 $('btnActivityAll').onclick = async () => {
-  try { await api('activity_all', { method: 'POST' }); toast('活跃上报已开始，结果见日志', 'ok'); }
-  catch (e) { toast(e.message, 'err'); }
+  try {
+    await api('activity_all', { method: 'POST' });
+    toast('活跃上报已开始，结果见日志（约 10 秒后连登天数更新）', 'ok');
+    setTimeout(() => loadGrowthStatus(true), 12000); // 结算后刷新「连登与能量」卡
+  } catch (e) { toast(e.message, 'err'); }
 };
 
 /* ── 模型 ─────────────────────────────────────────────────────────── */

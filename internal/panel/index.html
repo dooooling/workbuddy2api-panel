@@ -699,24 +699,6 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
       </div>
 
-      <!-- 连登与能量（growthstatus.go）：连登天数 / 档位 / 补签卡 / 能量 / 伙伴一眼可见。
-           「立即活跃上报」= POST /panel/api/activity_all，用于当场点亮当天连登（不必等 10:00 排程）。 -->
-      <div class="box" id="growthBox">
-        <header>
-          <h3>连登与能量<span class="hint">连登由每日 10:00 的「活跃上报」点亮（签到不计）；本卡数据缓存 60 秒</span></h3>
-          <span class="grow"></span>
-          <span class="note" id="growthNote"></span>
-          <button class="xs" id="btnGrowthRefresh">刷新</button>
-          <button class="xs primary" id="btnActivityAll">立即活跃上报</button>
-        </header>
-        <div class="tbl-wrap">
-          <table class="acc">
-            <thead><tr><th>账号</th><th>连登</th><th>下一档</th><th>档位 7/14/28</th><th>补签卡</th><th>能量</th><th>伙伴</th></tr></thead>
-            <tbody id="growthBody"></tbody>
-          </table>
-        </div>
-      </div>
-
       <!-- 卡片默认可见：此前 hidden + 「仅点检查才渲染」形成死锁（按钮藏在隐藏卡片里，
            用户看不到也就点不到，issue #137）。现在进页面即用 /overview 的到期快照渲染
            （数据来自 state.json，不经上游），「检查」按钮改为拉取逐包明细的增强入口。 -->
@@ -767,6 +749,24 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           </tr></thead>
           <tbody id="accBody"></tbody>
         </table>
+        </div>
+      </div>
+
+      <!-- 连登与能量（growthstatus.go）：连登天数 / 档位 / 补签卡 / 能量 / 伙伴一眼可见。
+           放在账号池表**之后**——账号池视图的第一屏必须是账号表（含积分列），
+           这张卡是补充信息，别把主表挤到折叠线下。要立刻点亮连登用账号池表头的「活跃上报」。 -->
+      <div class="box" id="growthBox">
+        <header>
+          <h3>连登与能量<span class="hint">连登由每日 10:00 的「活跃上报」点亮（签到不计）；要立刻点亮，点上方账号池表头的「活跃上报」；本卡数据缓存 60 秒</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="growthNote"></span>
+          <button class="xs" id="btnGrowthRefresh">刷新</button>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr><th>账号</th><th>连登</th><th>下一档</th><th>档位 7/14/28</th><th>补签卡</th><th>能量</th><th>伙伴</th></tr></thead>
+            <tbody id="growthBody"></tbody>
+          </table>
         </div>
       </div>
 
