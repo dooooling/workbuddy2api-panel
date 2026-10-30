@@ -1612,8 +1612,8 @@ process.stdout.write(JSON.stringify({ backend: be.size, ui: ui.size, missing }))
 	t.Logf("coverage=%s", got)
 }
 
-// TestAppJSGrowthStatusRender 连登/能量卡片渲染：档位中文、下一档文案、补签卡/能量/伙伴。
-// 这张卡是「连登几天、还差几天到档、能量多少」的唯一面板出口。
+// TestAppJSGrowthStatusRender 连登详情弹窗渲染：字段齐全（连登/本月累计/下一档/档位/
+// 补签卡/能量/伙伴/时间），错误态给出「读取失败」。这是账号行「详情」的唯一内容来源。
 func TestAppJSGrowthStatusRender(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1623,31 +1623,33 @@ func TestAppJSGrowthStatusRender(t *testing.T) {
 const vm = require('vm');
 const src = fs.readFileSync(process.argv[2], 'utf8');
 const start = src.indexOf('let growthAt');
-const end = src.indexOf("$('btnGrowthRefresh')");
-if (start < 0 || end < 0 || end < start) throw new Error('growth status renderer not found');
+const end = src.indexOf("$('btnCloseGrowth')");
+if (start < 0 || end < 0 || end < start) throw new Error('growth detail renderer not found');
 const els = {};
 const host = id => (els[id] = els[id] || { innerHTML: '', textContent: '', hidden: false });
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const ctx = { Date, Number, String, Math, JSON, Array, Object, console, $: id => host(id), esc };
 vm.createContext(ctx);
-vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.renderGrowthStatus=renderGrowthStatus;', ctx);
-ctx.renderGrowthStatus({ updated_at: 1793000000, items: [
-  { uid: 'uid-aaaa-bbbb', nickname: '135****2124', realm: 'cn', days: 8, month_total: 16,
-    next_tier: '14d', next_tier_remaining: 6, tier_7d: 'claimed', tier_14d: 'locked', tier_28d: 'locked',
-    makeup_cards: 1, makeup_cards_max: 4, energy: 103, buddy: '甜心喵' },
-  { uid: 'uid-cccc-dddd', nickname: 'g@x.com', realm: 'global', error: '企业版无个人成长体系' },
-]});
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.renderGrowthDetail=renderGrowthDetail;', ctx);
+ctx.renderGrowthDetail({
+  uid: 'uid-aaaa-bbbb', nickname: '135****2124', realm: 'cn', days: 8, month_total: 16,
+  next_tier: '14d', next_tier_remaining: 6, tier_7d: 'claimed', tier_14d: 'locked', tier_28d: 'locked',
+  makeup_cards: 1, makeup_cards_max: 4, energy: 103, buddy: '甜心喵' });
 const html = els.growthBody.innerHTML;
+ctx.renderGrowthDetail({ uid: 'u2', nickname: 'g@x.com', realm: 'global', error: '企业版无个人成长体系' });
+const errHtml = els.growthBody.innerHTML;
 process.stdout.write(JSON.stringify({
-  rows: (html.match(/<tr>/g) || []).length,
-  hasTier: html.indexOf('已兑换 / 未解锁 / 未解锁') >= 0,
-  hasNext: html.indexOf('14d 还差 6 天') >= 0,
-  hasCards: html.indexOf('>1/4<') >= 0,
-  hasEnergy: html.indexOf('>103<') >= 0,
+  fields: (html.match(/class="grow-row"/g) || []).length,
+  hasDays: html.indexOf('<b>8</b> 天') >= 0,
+  hasMonth: html.indexOf('本月累计 16 天') >= 0,
+  hasNext: html.indexOf('14d（还差 6 天）') >= 0,
+  hasTier: html.indexOf('7d 已兑换 · 14d 未解锁 · 28d 未解锁') >= 0,
+  hasCards: html.indexOf('1 / 4 张') >= 0,
+  hasEnergy: html.indexOf('103 点') >= 0,
   hasBuddy: html.indexOf('甜心喵') >= 0,
-  hasErr: html.indexOf('企业版无个人成长体系') >= 0,
-  hasNote: els.growthNote.textContent.length > 0,
+  hasTime: html.indexOf('数据时间') >= 0,
+  errReadable: errHtml.indexOf('读取失败') >= 0 && errHtml.indexOf('企业版无个人成长体系') >= 0,
 }));`
 	f, err := os.CreateTemp(t.TempDir(), "growth-render-*.cjs")
 	if err != nil {
@@ -1659,26 +1661,29 @@ process.stdout.write(JSON.stringify({
 	f.Close()
 	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
 	if err != nil {
-		t.Fatalf("growth status render node test failed: %v\n%s", err, out)
+		t.Fatalf("growth detail render node test failed: %v\n%s", err, out)
 	}
-	want := `{"rows":2,"hasTier":true,"hasNext":true,"hasCards":true,"hasEnergy":true,"hasBuddy":true,"hasErr":true,"hasNote":true}`
+	want := `{"fields":8,"hasDays":true,"hasMonth":true,"hasNext":true,"hasTier":true,"hasCards":true,"hasEnergy":true,"hasBuddy":true,"hasTime":true,"errReadable":true}`
 	if got := strings.TrimSpace(string(out)); got != want {
-		t.Fatalf("growth status render=%s want %s", got, want)
+		t.Fatalf("growth detail render=%s want %s", got, want)
 	}
 }
 
-// TestPanelIndexGrowthCard 面板骨架必须含「连登与能量」卡与「立即活跃上报」按钮：
-// 入口藏在自己隐藏的卡片里是 issue #137 那类死锁的根源，这里钉住 id 存在。
+// TestPanelIndexGrowthCard 连登信息改走账号行「详情」弹窗：骨架必须有 growthVeil /
+// growthBody / 刷新 / 关闭，且**不再有**独立的 growthBox 卡片（账号池只留一张表）。
 func TestPanelIndexGrowthCard(t *testing.T) {
 	b, err := os.ReadFile("index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, want := range []string{`id="growthBody"`, `id="btnActivityAll"`, `id="btnGrowthRefresh"`, `id="growthNote"`} {
+	for _, want := range []string{`id="growthVeil"`, `id="growthBody"`, `id="btnGrowthRefresh"`, `id="btnCloseGrowth"`, `id="btnActivityAll"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("index.html 缺少 %s", want)
 		}
+	}
+	if strings.Contains(s, `id="growthBox"`) {
+		t.Error("不该再有独立的 growthBox 卡片（连登信息应在「详情」弹窗里）")
 	}
 }
 
@@ -1692,13 +1697,13 @@ func TestPanelIndexAccountTableFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	acc := strings.Index(s, `id="accBody"`)
-	grow := strings.Index(s, `id="growthBox"`)
-	if acc < 0 || grow < 0 {
-		t.Fatalf("缺少 accBody(%d)/growthBox(%d)", acc, grow)
+	if !strings.Contains(s, `id="accBody"`) {
+		t.Fatal("缺少 accBody")
 	}
-	if grow < acc {
-		t.Error("growthBox 必须在账号表 accBody 之后（否则账号表被挤到下面）")
+	// 账号池视图里除账号表外不允许再有第二张账号表（历史教训：连登卡插在前面，
+	// 把含积分列的账号表挤到折叠线下，看起来像"积分不显示了"）。
+	if strings.Contains(s, `id="growthBox"`) {
+		t.Error("不该再有独立 growthBox 卡片")
 	}
 	if n := strings.Count(s, `id="btnActivityAll"`); n != 1 {
 		t.Errorf("btnActivityAll 出现 %d 次，必须恰好 1 次（重复 id 会让表头按钮失效）", n)

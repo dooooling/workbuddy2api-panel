@@ -622,6 +622,13 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .unk-tag.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
   .unk-tag.warn { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
   .unk-tag.mute { background: color-mix(in srgb, var(--ink-3) 14%, transparent); color: var(--ink-3); }
+
+  /* ── 连登与能量详情弹窗（账号行「详情」）──────────────────────────── */
+  .grow-row { display: flex; gap: 14px; padding: 8px 0; font-size: 13px;
+    border-top: 1px dashed color-mix(in srgb, var(--ink-3) 22%, transparent); }
+  .grow-row:first-child { border-top: 0; }
+  .grow-k { flex: 0 0 92px; color: var(--ink-3); }
+  .grow-v { flex: 1; color: var(--ink-1); word-break: break-all; }
 </style>
 <!-- 移动端适配：独立文件，必须在主 <style> 之后（@media 覆盖依赖层叠顺序） -->
 <link rel="stylesheet" href="mobile.css">
@@ -749,24 +756,6 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           </tr></thead>
           <tbody id="accBody"></tbody>
         </table>
-        </div>
-      </div>
-
-      <!-- 连登与能量（growthstatus.go）：连登天数 / 档位 / 补签卡 / 能量 / 伙伴一眼可见。
-           放在账号池表**之后**——账号池视图的第一屏必须是账号表（含积分列），
-           这张卡是补充信息，别把主表挤到折叠线下。要立刻点亮连登用账号池表头的「活跃上报」。 -->
-      <div class="box" id="growthBox">
-        <header>
-          <h3>连登与能量<span class="hint">连登由每日 10:00 的「活跃上报」点亮（签到不计）；要立刻点亮，点上方账号池表头的「活跃上报」；本卡数据缓存 60 秒</span></h3>
-          <span class="grow"></span>
-          <span class="note" id="growthNote"></span>
-          <button class="xs" id="btnGrowthRefresh">刷新</button>
-        </header>
-        <div class="tbl-wrap">
-          <table class="acc">
-            <thead><tr><th>账号</th><th>连登</th><th>下一档</th><th>档位 7/14/28</th><th>补签卡</th><th>能量</th><th>伙伴</th></tr></thead>
-            <tbody id="growthBody"></tbody>
-          </table>
         </div>
       </div>
 
@@ -1333,6 +1322,24 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <button id="btnTaskAutoAll" class="primary">一键完成可自动任务</button>
       <button id="btnTaskReload">重新查询</button>
       <button id="btnCloseTask">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 连登与能量详情（账号行「详情」按钮打开；数据来自 GET /panel/api/growth_status） -->
+<div class="veil" id="growthVeil">
+  <div class="dlg" style="width:560px">
+    <header>
+      <h3>连登与能量 <span class="hint" id="growthWho"></span></h3>
+      <div class="hint">连登由每日 10:00 的「活跃上报」点亮（签到不计）；账号池表头的「活跃上报」可立刻点亮当天。</div>
+    </header>
+    <div class="body">
+      <div id="growthBody"></div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnGrowthRefresh">刷新</button>
+      <button id="btnCloseGrowth" class="primary">关闭</button>
     </footer>
   </div>
 </div>

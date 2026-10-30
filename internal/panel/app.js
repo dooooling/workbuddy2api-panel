@@ -457,7 +457,8 @@ function renderAccounts(list) {
           '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '"' + (s.checkin_done ? ' title="今日已签到；点击可重新签到并刷新余额"' : '') + '>' + (s.checkin_done ? '已签' : '签到') + '</button>') +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '"' + (s.enterprise ? ' title="刷新企业版已分配额度（上游 get-enterprise-user-usage）"' : '') + '>' + (s.enterprise ? '额度' : '余额') + '</button>' +
         (s.enterprise ? '' :
-          '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>') +
+          '<button class="xs ghost" data-a="growth" data-u="' + esc(s.uid) + '" title="连登与能量详情">详情</button>' +
+        '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>') +
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : (s.paused ? '<button class="xs primary" data-a="resume" data-u="' + esc(s.uid) + '">恢复选号</button>'
                             : '<button class="xs ghost" data-a="pause" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额') + '">暂停选号</button>')) +
@@ -534,8 +535,6 @@ async function loadOverview(quiet) {
     const liveFresh = lastPackages && (Date.now() - lastPackagesAt) < EXP_FRESH_MS;
     if ($('expBox') && !liveFresh) renderExpirySnapshot(d);
     loadUnknownTasks();
-    // 连登/能量：后端 60s 缓存，这里再节流一次，避免首页 5s 轮询每次都发请求。
-    if (Date.now() - growthAt > 60000) loadGrowthStatus(false);
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
@@ -621,45 +620,73 @@ document.addEventListener('click', async ev => {
 /* ── 连登与能量（growthstatus.go）─────────────────────────────────────
    连登天数只有成长中心网页看得到，而它由每日 10:00 的活跃上报点亮——这里把它和
    档位/补签卡/盲盒能量/伙伴聚到一张表，并提供「立即活跃上报」当场点亮当天连登。 */
+/* ── 连登与能量（账号行内「详情」弹窗）───────────────────────────────
+   账号池只保留一张表（账号/状态/积分/…），连登天数、档位、补签卡、盲盒能量、
+   伙伴这些成长中心的数据放进每行的「详情」弹窗——两张表挤第一屏会让人以为
+   积分列没了。数据来自 GET /panel/api/growth_status（后端 60s 缓存）。 */
 let growthAt = 0;
+let growthItems = [];
+let growthUID = null;
 async function loadGrowthStatus(force) {
-  try {
-    const d = await api('growth_status' + (force ? '?refresh=1' : ''));
-    growthAt = Date.now();
-    renderGrowthStatus(d);
-  } catch (e) { /* 附加能力：拿不到就不渲染，不影响账号池 */ }
+  const d = await api('growth_status' + (force ? '?refresh=1' : ''));
+  growthAt = Date.now();
+  growthItems = (d && d.items) || [];
+  return growthItems;
 }
 function growthTier(s) {
   if (s === 'claimed') return '已兑换';
   if (s === 'locked') return '未解锁';
   return s || '—';
 }
-function renderGrowthStatus(d) {
-  const tb = $('growthBody');
-  if (!tb) return;
-  const items = (d && d.items) || [];
-  if (!items.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">暂无账号</div></td></tr>';
+function growthItem(uid) {
+  for (const it of growthItems) if (it.uid === uid) return it;
+  return null;
+}
+// renderGrowthDetail 把单个账号的成长数据渲染成「字段 / 值」两列。
+function renderGrowthDetail(it) {
+  const body = $('growthBody');
+  if (!body) return;
+  if (!it) {
+    body.innerHTML = '<div class="empty"><div class="big">没有该账号的连登数据</div>点「刷新」重新拉一次</div>';
     return;
   }
-  tb.innerHTML = items.map(it => {
-    const err = it.error ? '<div class="hint" style="color:var(--bad);font-size:11.5px">' + esc(it.error) + '</div>' : '';
-    const next = it.next_tier ? it.next_tier + ' 还差 ' + it.next_tier_remaining + ' 天' : '—';
-    return '<tr><td class="who"><div class="nm">' + esc(it.nickname || it.uid) + '</div>' +
-      '<div class="id">' + esc((it.realm || '') + ' · ' + String(it.uid).slice(0, 8)) + '</div>' + err + '</td>' +
-      '<td class="num">' + (it.error ? '—' : it.days) + '</td>' +
-      '<td>' + esc(next) + '</td>' +
-      '<td>' + esc(growthTier(it.tier_7d)) + ' / ' + esc(growthTier(it.tier_14d)) + ' / ' + esc(growthTier(it.tier_28d)) + '</td>' +
-      '<td class="num">' + (it.error ? '—' : it.makeup_cards + '/' + it.makeup_cards_max) + '</td>' +
-      '<td class="num">' + (it.error ? '—' : it.energy) + '</td>' +
-      '<td>' + esc(it.buddy || '—') + '</td></tr>';
-  }).join('');
-  if ($('growthNote')) {
-    const t = d && d.updated_at ? new Date(d.updated_at * 1000).toLocaleTimeString() : '';
-    $('growthNote').textContent = t + (d && d.stale ? '（旧）' : '');
+  if (it.error) {
+    body.innerHTML = '<div class="empty"><div class="big">读取失败</div>' + esc(it.error) + '</div>';
+    return;
   }
+  const row = (k, v) => '<div class="grow-row"><span class="grow-k">' + esc(k) + '</span><span class="grow-v">' + v + '</span></div>';
+  const tiers = '7d ' + growthTier(it.tier_7d) + ' · 14d ' + growthTier(it.tier_14d) + ' · 28d ' + growthTier(it.tier_28d);
+  const next = it.next_tier ? it.next_tier + '（还差 ' + it.next_tier_remaining + ' 天）' : '—';
+  body.innerHTML =
+    row('账号', esc(it.nickname || it.uid) + ' <span class="id">' + esc(it.realm || '') + ' · ' + esc(String(it.uid).slice(0, 8)) + '</span>') +
+    row('连登天数', '<b>' + it.days + '</b> 天' + (it.month_total ? '（本月累计 ' + it.month_total + ' 天）' : '')) +
+    row('下一档', esc(next)) +
+    row('档位状态', esc(tiers)) +
+    row('补签卡', it.makeup_cards + ' / ' + it.makeup_cards_max + ' 张') +
+    row('盲盒能量', it.energy + ' 点<span class="hint">（每次开盒 10 点）</span>') +
+    row('已有伙伴', it.buddy ? esc(it.buddy) : '未领养') +
+    row('数据时间', growthAt ? new Date(growthAt).toLocaleTimeString() : '—');
 }
-$('btnGrowthRefresh') && ($('btnGrowthRefresh').onclick = () => { loadGrowthStatus(true); toast('已刷新连登数据', 'ok'); });
+async function openGrowth(uid) {
+  growthUID = uid;
+  $('growthWho').textContent = uid.slice(0, 16);
+  $('growthVeil').classList.add('on');
+  renderGrowthDetail(growthItem(uid));
+  try {
+    if (Date.now() - growthAt > 60000 || !growthItem(uid)) {
+      await loadGrowthStatus(true);
+      renderGrowthDetail(growthItem(uid));
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+$('btnCloseGrowth') && ($('btnCloseGrowth').onclick = () => { $('growthVeil').classList.remove('on'); growthUID = null; });
+$('btnGrowthRefresh') && ($('btnGrowthRefresh').onclick = async () => {
+  try {
+    await loadGrowthStatus(true);
+    renderGrowthDetail(growthItem(growthUID));
+    toast('已刷新连登数据', 'ok');
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
@@ -687,6 +714,8 @@ $('accBody').addEventListener('click', async ev => {
     } else if (a === 'resume') {
       await api('accounts/' + encodeURIComponent(u) + '/resume', { method: 'POST' });
       toast('已恢复选号', 'ok');
+    } else if (a === 'growth') {
+      openGrowth(u);
     } else if (a === 'tasks') {
       openTasks(u);
     } else if (a === 'remove') {
