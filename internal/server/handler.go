@@ -47,7 +47,13 @@ type Config struct {
 	LargeRequestBytes int64
 	// LargeRequestCooldown 大请求排除窗口：同号两次大请求的最小间隔。默认 90s。
 	LargeRequestCooldown time.Duration
-	RefreshSkew          time.Duration // token 提前刷新窗口，默认 10m
+	// LargeRequestBudget 预算制（#384 终版）：滑动窗口内每号最多几条大请求，
+	// 达预算后下一条大请求迁给别的号并重绑会话（前缀缓存只丢一次）。
+	// >0 = 预算制（推荐）；<=0 = legacy 逐请求轮换。默认 6。
+	LargeRequestBudget int
+	// LargeRequestBudgetWindow 预算滑动窗口。默认 120s。
+	LargeRequestBudgetWindow time.Duration
+	RefreshSkew              time.Duration // token 提前刷新窗口，默认 10m
 
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，
 	// 面板自带 Bearer 鉴权（同一 api_key）与内嵌静态资源，主路由只做转发。
@@ -836,14 +842,41 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		liveLargeBytes = lv.LargeRequestBytes
 		liveLargeCooldown = lv.LargeRequestCooldown
 	}
+	largeBudget := h.cfg.LargeRequestBudget
+	largeBudgetWindow := 120 * time.Second // #384 默认滑动窗口
+	if h.cfg.LargeRequestBudgetWindow > 0 {
+		largeBudgetWindow = h.cfg.LargeRequestBudgetWindow
+	}
+	if lv := h.loadLive(); lv.LargeRequestBudgetWindow > 0 {
+		largeBudgetWindow = lv.LargeRequestBudgetWindow
+	}
+	if lv := h.loadLive(); lv.LargeRequestBudget > 0 || h.cfg.LargeRequestBudget > 0 {
+		largeBudget = h.cfg.LargeRequestBudget
+		if lv := h.loadLive(); lv.LargeRequestBudget > 0 {
+			largeBudget = lv.LargeRequestBudget
+		}
+	}
 	largeReq := h.largeReq.isLarge(liveLargeBytes, int64(len(body)))
 	var largeExcluded map[string]bool
-	if largeReq {
+	if largeReq && largeBudget > 0 {
+		// 预算制：把「窗口内已达预算」的号并入排除集（供非粘性选号路径过滤）。
+		// 粘性路径在轮转内单独判定（见下方 budgetExceeded），不依赖这张表。
+		largeExcluded = h.largeReq.excludedBudget(largeBudget, largeBudgetWindow)
+	}
+	if largeReq && largeBudget <= 0 {
+		// legacy 逐请求轮换（预算关闭时）：排除窗模式
 		largeExcluded = h.largeReq.excluded(liveLargeCooldown)
 		if stickyUID != "" && largeExcluded[stickyUID] {
 			unbindSticky()
 			stickyUID = ""
 		}
+	}
+	if largeReq && largeBudget > 0 && stickyUID != "" &&
+		h.largeReq.budgetExceeded(stickyUID, largeBudget, largeBudgetWindow) {
+		// 预算制：粘性号窗口内大请求已达预算 → 会话迁移（解绑后本请求落到别的号，
+		// 成功后粘性自动绑到新号；迁移只发生一次，之后继续命中新号的前缀缓存）。
+		unbindSticky()
+		stickyUID = ""
 	}
 
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -853,8 +886,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
 			// 跨域回退开启且请求为裸名时，粘性号可以落在任一域（回退成功后绑定的是另一域
 			// 的账号，下一轮不该被 realm 校验立刻解绑）。
-			if acct != nil && largeExcluded[acct.UID] {
-				acct = nil // 粘性号刚承接过大请求 → 换号
+			if acct != nil && ((largeBudget > 0 && h.largeReq.budgetExceeded(acct.UID, largeBudget, largeBudgetWindow)) || largeExcluded[acct.UID]) {
+				acct = nil // 粘性号预算耗尽（或 legacy 排除窗命中）→ 换号
 			}
 			if acct == nil || (realm != "" && acct.Realm() != realm && !crossRealm) {
 				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑，
@@ -894,6 +927,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		st.uid = acct.UID
 		// 同步昵称：请求流水行只写 uid8 时无法直观看是哪一号，昵称随本次选号带入日志行。
 		st.nick = acct.Nickname
+		if largeReq && largeBudget > 0 {
+			// 大请求 + 预算制：原子「检查预算并登记」。已超预算 → 视为该号本轮不可用，
+			// 记入 tried 继续轮转（并发下这是唯一能保证预算不被突破的时机）。
+			if !h.largeReq.acquire(acct.UID, largeBudget, largeBudgetWindow) {
+				tried[acct.UID] = true
+				continue
+			}
+		}
 		if crossRealm && h.cfg.Upstream != nil && acct.Realm() != realm {
 			// 跨域回退命中：按实际服务域取积分倍率，用量/账本记的是真实域口径，
 			// 而不是请求前缀声明的域。
@@ -1164,6 +1205,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 真成功：这一跳读完且上游没有报错，才记成功并让粘性跟上。
 				st.outcome = reqlog.OutcomeSuccess
 				h.cfg.Pool.NoteSuccess(acct.UID)
+				if largeReq {
+				}
 				// 11102 负缓存清命：该账号该模型实测成功，立即解除避让（不必等 TTL 到期）。
 				// BlockModelClear 按 "11102" reason 前缀识别，只清 11102 条目、不碰 6004 独立冷却。
 				h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
@@ -1249,9 +1292,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		st.toks = completionTokens(resp)
 		// 非流式同理：聚合成功（无 error 帧、非空流）才算这一跳成功，事后才记成功/绑粘性。
 		h.cfg.Pool.NoteSuccess(acct.UID)
-		if largeReq {
-			h.largeReq.mark(acct.UID)
-		}
+
 		h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
 		if sessKey != "" && h.cfg.Session != nil {
 			h.cfg.Session.Bind(sessKey, acct.UID)
