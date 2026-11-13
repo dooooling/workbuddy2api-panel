@@ -228,8 +228,10 @@ type Config struct {
 		// LargeRequestBytes 大上下文请求阈值（字节）：请求体 ≥ 该值视为大请求，
 		// 选号放弃粘性并排除窗口内已承接大请求的号（防单号连续压超大上下文触发
 		// 上游 11140 风控，ithtelab #387）。默认 262144（256KB）；<=0 = 关闭。
-		LargeRequestBytes    int64  `json:"large_request_bytes"`
-		LargeRequestCooldown string `json:"large_request_cooldown"` // 大请求排除窗口，默认 "90s"
+		LargeRequestBytes        int64  `json:"large_request_bytes"`
+		LargeRequestCooldown     string `json:"large_request_cooldown"` // 大请求排除窗口，默认 "90s"
+		LargeRequestBudget       int    `json:"large_request_budget"`
+		LargeRequestBudgetWindow string `json:"large_request_budget_window"`
 		// PreferExpiring 快过期积分加权开关，默认 true。开启且 expiring_soon 窗口内
 		// 存在有效批次时，该账号选号权重 ×3（虚拟实例，见 pool 路由加权）；
 		// 不按到期时间排序、与批次金额无关（issue #101 对齐实现口径）。
@@ -265,19 +267,20 @@ type Config struct {
 	} `json:"session_sticky"`
 
 	// 解析后
-	SoftRateDur             time.Duration `json:"-"`
-	SoftRateMaxDur          time.Duration `json:"-"`
-	BreakerCooldownDur      time.Duration `json:"-"`
-	BreakerCooldownMaxD     time.Duration `json:"-"`
-	DegradeCooldownDur      time.Duration `json:"-"`
-	LargeRequestCooldownDur time.Duration `json:"-"`
-	BalanceSpreadWindowDur  time.Duration `json:"-"`
-	DegradeCooldownMaxD     time.Duration `json:"-"`
-	SessionTTL              time.Duration `json:"-"`
-	SessionGCInterval       time.Duration `json:"-"`
-	BalanceRefreshInterval  time.Duration `json:"-"` // 0 = 不启动（enabled=false）
-	TaskSweepInterval       time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
-	ExpiringSoonDur         time.Duration `json:"-"`
+	SoftRateDur                 time.Duration `json:"-"`
+	SoftRateMaxDur              time.Duration `json:"-"`
+	BreakerCooldownDur          time.Duration `json:"-"`
+	BreakerCooldownMaxD         time.Duration `json:"-"`
+	DegradeCooldownDur          time.Duration `json:"-"`
+	LargeRequestCooldownDur     time.Duration `json:"-"`
+	LargeRequestBudgetWindowDur time.Duration `json:"-"`
+	BalanceSpreadWindowDur      time.Duration `json:"-"`
+	DegradeCooldownMaxD         time.Duration `json:"-"`
+	SessionTTL                  time.Duration `json:"-"`
+	SessionGCInterval           time.Duration `json:"-"`
+	BalanceRefreshInterval      time.Duration `json:"-"` // 0 = 不启动（enabled=false）
+	TaskSweepInterval           time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
+	ExpiringSoonDur             time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
@@ -558,6 +561,11 @@ func (c *Config) normalize() error {
 	if c.Schedule.BalanceSpreadWindow != "" {
 		if c.Schedule.BalanceSpreadWindowDur, err = time.ParseDuration(c.Schedule.BalanceSpreadWindow); err != nil {
 			return fmt.Errorf("schedule.balance_spread_window: %w", err)
+		}
+	}
+	if c.Pool.LargeRequestBudgetWindow != "" {
+		if c.LargeRequestBudgetWindowDur, err = time.ParseDuration(c.Pool.LargeRequestBudgetWindow); err != nil {
+			return fmt.Errorf("pool.large_request_budget_window: %w", err)
 		}
 	}
 	if c.Pool.LargeRequestCooldown != "" {
