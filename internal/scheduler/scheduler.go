@@ -55,6 +55,14 @@ type Config struct {
 	// 留给用户自己决定何时开（例如等新伙伴池上线）。
 	BlindboxDisabled bool
 
+	// JitterPermill 人味化抖动千分比（0-500，缺省 0 = 关闭）：余额刷新/补领清扫的
+	// 每轮间隔在 ±(值/1000)×基准内稳定随机偏移，账号遍历逐号独立摊开（misakano
+	// #84 风控反制：消除「同一秒全池同动作」）。
+	JitterPermill int
+	// BalanceSpreadWindow 余额刷新账号摊开窗口（逐号独立延迟 [0, window)，缺省 0
+	// = 关闭）。建议与刷新间隔同量级（如 5m 刷新配 60s 窗口）。
+	BalanceSpreadWindow time.Duration
+
 	// IncludeDisabledInTasks 让「保号类」四任务（签到 / 活跃上报 / token 保活 / 余额刷新）
 	// 对已禁用（disabled）的账号也执行（schedule.include_disabled_in_tasks）。
 	// 缺省 false = 保持「禁用的跳过」既有语义；打开后禁用号照常签到保号，但**仍不参与
@@ -96,6 +104,11 @@ type Scheduler struct {
 	// sweepInterval 任务补领清扫间隔（纳秒，0=暂停）。语义同 balanceInterval：
 	// SetTaskSweepInterval 可热改（面板保存配置后下一轮生效）。
 	sweepInterval atomic.Int64
+
+	// jitterPermill 人味化抖动千分比（热改，SetJitter）。
+	jitterPermill atomic.Int64
+	// balanceSpreadWindow 余额刷新账号摊开窗口（热改，SetJitter）。
+	balanceSpreadWindow atomic.Int64
 
 	// lastBalanceRefresh 最近一次后台余额刷新的完成时刻（Unix 纳秒，0=尚未跑过）。
 	// 供面板「到期提醒」标注数据年龄：卡片展示的是这份快照，必须让年龄可读，
@@ -176,6 +189,19 @@ func (s *Scheduler) SetIncludeDisabledInTasks(v bool) {
 	s.schedMu.Lock()
 	s.cfg.IncludeDisabledInTasks = v
 	s.schedMu.Unlock()
+}
+
+// SetJitter 设置人味化抖动（misakano #84 反制）：permill 0-500，spreadWindow 为
+// 余额刷新账号摊开窗口。面板保存配置即生效。
+func (s *Scheduler) SetJitter(permill int, spreadWindow time.Duration) {
+	if permill < 0 {
+		permill = 0
+	}
+	if permill > 500 {
+		permill = 500
+	}
+	s.jitterPermill.Store(int64(permill))
+	s.balanceSpreadWindow.Store(int64(spreadWindow))
 }
 
 // SetBlindboxEnabled 开/关「自动开盲盒」（schedule.blindbox_enabled，缺省开）。
@@ -695,6 +721,10 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 		wg.Add(1)
 		go func(a *auth.Auth, uid string) {
 			defer wg.Done()
+			// 账号摊开：逐号独立延迟 [0, spreadWindow)，消除「同一秒全池同动作」
+			if d := spreadInterval(time.Duration(s.balanceSpreadWindow.Load()), int(s.jitterPermill.Load()), "bal|"+uid); d > 0 {
+				time.Sleep(d)
+			}
 			remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
 			if err != nil {
 				log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
@@ -709,7 +739,7 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 				EarliestRemaining: earliestRemaining,
 				ExpiryBuckets:     poolExpiryBuckets(buckets),
 			})
-			}(a, st.UID)
+		}(a, st.UID)
 	}
 	wg.Wait()
 	s.lastBalanceRefresh.Store(time.Now().UnixNano())
@@ -745,7 +775,8 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			// 人味化：间隔 ±jitter 偏移（misakano #84：精确整点齐射是风控画像）
+			timer := time.NewTimer(jitterPermille(cur, int(s.jitterPermill.Load()), "periodic"))
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -788,7 +819,8 @@ func (s *Scheduler) StartTaskSweep(ctx context.Context, interval time.Duration) 
 					continue
 				}
 			}
-			timer := time.NewTimer(cur)
+			// 人味化：间隔 ±jitter 偏移（misakano #84：精确整点齐射是风控画像）
+			timer := time.NewTimer(jitterPermille(cur, int(s.jitterPermill.Load()), "periodic"))
 			select {
 			case <-ctx.Done():
 				timer.Stop()

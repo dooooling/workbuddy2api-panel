@@ -41,7 +41,13 @@ type Config struct {
 	// RedisMode 观测字段（"upstash" / "noop"），供 /status 透出。
 	RedisMode    string
 	SoftCooldown time.Duration // 429/限流文案软冷却基数，默认 600s（连续触发指数退避，封顶 soft_rate_max）
-	RefreshSkew  time.Duration // token 提前刷新窗口，默认 10m
+	// LargeRequestBytes 大上下文请求阈值：请求体 ≥ 该值视为"大请求"，选号时放弃
+	// 会话粘性并排除窗口内已承接大请求的号（ithtelab #387：单号在几十秒内被连续压
+	// 超大上下文会触发上游 11140 "unusual activity" 风控）。<=0 = 关闭。默认 262144（256KB）。
+	LargeRequestBytes int64
+	// LargeRequestCooldown 大请求排除窗口：同号两次大请求的最小间隔。默认 90s。
+	LargeRequestCooldown time.Duration
+	RefreshSkew          time.Duration // token 提前刷新窗口，默认 10m
 
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，
 	// 面板自带 Bearer 鉴权（同一 api_key）与内嵌静态资源，主路由只做转发。
@@ -86,14 +92,21 @@ func (h *Handler) loadLive() livecfg.Snapshot {
 		return h.cfg.Live.Load()
 	}
 	return livecfg.Snapshot{
-		APIKey:           h.cfg.APIKey,
-		SoftCooldown:     h.cfg.SoftCooldown,
-		RecordClientInfo: h.cfg.RecordClientInfo,
-		HiddenModels:     livecfg.NormalizeHiddenModels(h.cfg.ModelsHidden),
+		APIKey:               h.cfg.APIKey,
+		SoftCooldown:         h.cfg.SoftCooldown,
+		LargeRequestBytes:    h.cfg.LargeRequestBytes,
+		LargeRequestCooldown: h.cfg.LargeRequestCooldown,
+		RecordClientInfo:     h.cfg.RecordClientInfo,
+		HiddenModels:         livecfg.NormalizeHiddenModels(h.cfg.ModelsHidden),
 	}
 }
 
 // softCooldown 返回当前生效的软冷却基数（热改优先，<=0 回退默认）。
+// upstreamRestrictionCooldown 带风控话术的 11140 临时限制的软冷却时长。
+// ithtelab #362 生产实测：该类限制同一账号数小时后自动恢复 200，45 分钟后重试
+// 足够保守又不至于把账号闲置半天（原硬禁用则永久出池）。
+const upstreamRestrictionCooldown = 45 * time.Minute
+
 func (h *Handler) softCooldown() time.Duration {
 	if d := h.loadLive().SoftCooldown; d > 0 {
 		return d
@@ -123,6 +136,10 @@ type Handler struct {
 	// wafIP WAF IP 级拦截状态机（fail-fast，wafip.go）：短窗多号 WAF 403 →
 	// 激活期轮转遇 WAF 403 直接终止（不放大请求量）。进程内状态、重启清零。
 	wafIP wafIPGate
+
+	// largeReq 大上下文请求排除窗（largerequest.go）：窗口内已承接大请求的号
+	// 在选号时被排除，迫使大请求逐请求轮换（ithtelab #387 风控画像反制）。
+	largeReq *largeRequestGate
 }
 
 // NewHandler 构建 handler。
@@ -133,13 +150,19 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.SoftCooldown <= 0 {
 		cfg.SoftCooldown = 600 * time.Second // 软限流基数（连续触发按指数退避放大）
 	}
+	if cfg.LargeRequestBytes <= 0 {
+		cfg.LargeRequestBytes = 262144 // 大上下文阈值（256KB），ithtelab #387 风控画像
+	}
+	if cfg.LargeRequestCooldown <= 0 {
+		cfg.LargeRequestCooldown = 90 * time.Second
+	}
 	if cfg.RefreshSkew <= 0 {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
 	if cfg.PromptMode == "" {
 		cfg.PromptMode = "custom" // 缺省 custom：网关自有提示词
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	h := &Handler{cfg: cfg, mux: http.NewServeMux(), largeReq: newLargeRequestGate()}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	// 联网搜索（Anthropic Messages 兼容形态，见 messages.go）。路径刻意不占用
 	// /v1/messages——那是 Anthropic 模型对话的标准路径，留给未来的 chat 转发。
@@ -803,6 +826,26 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
 
+	// 大上下文请求：单号在窗口内被连续压超大请求会触发上游 11140 风控（ithtelab
+	// #387：DSH 长上下文 2.4~6MB 连发，5 号十秒内全灭）。这里(a)放弃粘性（大请求
+	// 不绑号），(b)选号排除窗口内已承接大请求的号，(c)选中后登记。窗口内全部号
+	// 都承接过时排除集为满——放行（退化普通轮换），排除是尽力而为不是硬阻断。
+	liveLargeBytes := h.cfg.LargeRequestBytes
+	liveLargeCooldown := h.cfg.LargeRequestCooldown
+	if lv := h.loadLive(); lv.LargeRequestBytes > 0 {
+		liveLargeBytes = lv.LargeRequestBytes
+		liveLargeCooldown = lv.LargeRequestCooldown
+	}
+	largeReq := h.largeReq.isLarge(liveLargeBytes, int64(len(body)))
+	var largeExcluded map[string]bool
+	if largeReq {
+		largeExcluded = h.largeReq.excluded(liveLargeCooldown)
+		if stickyUID != "" && largeExcluded[stickyUID] {
+			unbindSticky()
+			stickyUID = ""
+		}
+	}
+
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
@@ -810,6 +853,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
 			// 跨域回退开启且请求为裸名时，粘性号可以落在任一域（回退成功后绑定的是另一域
 			// 的账号，下一轮不该被 realm 校验立刻解绑）。
+			if acct != nil && largeExcluded[acct.UID] {
+				acct = nil // 粘性号刚承接过大请求 → 换号
+			}
 			if acct == nil || (realm != "" && acct.Realm() != realm && !crossRealm) {
 				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑，
 				// 本次回落普通轮换。
@@ -828,11 +874,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 避免拿全冷却兜底捞回来的旧域账号白撞一次上游。
 				pickRealm = otherRealm(realm)
 			}
-			acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, pickRealm)
+			acct = h.cfg.Pool.PickExcludingForRealm(mergeExcluded(tried, largeExcluded), bareModel, pickRealm)
 			if acct == nil && crossRealm {
 				// 该域选不到（并发抢名额/轮换耗尽/另一域刚冷却完）→ 另一域再试一次，
 				// 保持尽力而为语义；tried 已记录失败号，轮转仍由 MaxRotate 封顶。
-				acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, otherRealm(pickRealm))
+				acct = h.cfg.Pool.PickExcludingForRealm(mergeExcluded(tried, largeExcluded), bareModel, otherRealm(pickRealm))
 			}
 		}
 		if acct == nil {
@@ -1203,6 +1249,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		st.toks = completionTokens(resp)
 		// 非流式同理：聚合成功（无 error 帧、非空流）才算这一跳成功，事后才记成功/绑粘性。
 		h.cfg.Pool.NoteSuccess(acct.UID)
+		if largeReq {
+			h.largeReq.mark(acct.UID)
+		}
 		h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
 		if sessKey != "" && h.cfg.Session != nil {
 			h.cfg.Session.Bind(sessKey, acct.UID)
@@ -1497,6 +1546,11 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
 		// 注意 11128 的 msg 同为 "request illegal"，但那是通道校验失败，已在
 		// Classify 分流到 ErrChannelRefused，走不到这里。
+		if upstream.IsUpstreamRestriction(body) {
+			h.cfg.Pool.Cooldown(uid, pool.CoolSoft, upstreamRestrictionCooldown,
+				"upstream restriction (11140 unusual activity): appealable via SUBMIT_FEEDBACK, typically auto-recovers in hours")
+			return
+		}
 		if upstream.IsAccountRestricted(body) {
 			h.cfg.Pool.Disable(uid, "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
 			return

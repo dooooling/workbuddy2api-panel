@@ -160,6 +160,35 @@ var accountFaultMarkers = []string{
 // accountRestrictedMsg 是 WorkBuddy 11140 账号限制的正文关键词。
 const accountRestrictedMsg = "request illegal"
 
+// upstreamRestrictionMarkers 是 11140 风控限制的风控话术（多语言）。ithtelab/
+// workbuddy-manager #362 生产实测：带这些话术的 11140 是**临时限制**（同一账号
+// 数小时后自动恢复 200，响应自带 actions:["SUBMIT_FEEDBACK"] 申诉指引），应软
+// 冷却而非硬禁用；不带话术的 11140 "request illegal"（历史 global auth_forbidden）
+// 才是硬禁用场景。双条件（code + 话术）避免把 11-128 通道校验误判进来。
+var upstreamRestrictionMarkers = []string{
+	"unusual activity", // displayMsg.en
+	"异常行为",             // displayMsg.zh
+	"異常使用行為",           // displayMsg.zh-hant（繁体实际文案）
+	"abnormal",         // 英文其他变体
+}
+
+// IsUpstreamRestriction 报告上游 body 是否为「带风控话术的 11140 限制」。
+// 这类限制是临时的（实测数小时后自动恢复），处置应为软冷却 + 等待/申诉，
+// **绝不禁用**——硬禁用会把本可自愈的账号永久踢出池（ithtelab #362 现场：
+// 6 个本可恢复的号被写死 re-login required）。
+func IsUpstreamRestriction(body string) bool {
+	if !IsAccountRestricted(body) {
+		return false
+	}
+	lower := strings.ToLower(body)
+	for _, m := range upstreamRestrictionMarkers {
+		if strings.Contains(lower, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsAccountRestricted 报告上游 body 是否为 WorkBuddy 的账号级限制（11140
 // "request illegal"）。必须 code + 文案双条件：
 //   - 只看文案："request illegal" 也出现在 11128 通道校验失败里（健康账号）；
