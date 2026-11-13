@@ -34,6 +34,8 @@
     "keepalive_enabled": true,
     "blackcat_enabled": true,
     "blindbox_enabled": true,
+    "jitter_permillion": 150,
+    "balance_spread_window": "60s",
     "balance_refresh_enabled": true,
     "balance_refresh_minutes": 5,
     "include_disabled_in_tasks": false

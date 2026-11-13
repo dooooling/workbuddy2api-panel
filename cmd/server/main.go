@@ -206,6 +206,9 @@ func main() {
 		BlindboxDisabled:   !cfg.Schedule.BlindboxEnabled,
 		// 保号类四任务是否覆盖禁用账号（缺省 false = 禁用即跳过，保持既有行为）。
 		IncludeDisabledInTasks: cfg.Schedule.IncludeDisabledInTasks,
+		// 人味化抖动（misakano #84 反制）：缺省 0 = 关闭，config 可开
+		JitterPermill:       cfg.Schedule.JitterPermill,
+		BalanceSpreadWindow: cfg.Schedule.BalanceSpreadWindowDur,
 	})
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
@@ -258,6 +261,8 @@ func main() {
 	live := livecfg.New(livecfg.Snapshot{
 		APIKey:               cfg.APIKey,
 		SoftCooldown:         cfg.SoftRateDur,
+		LargeRequestBytes:    cfg.Pool.LargeRequestBytes,
+		LargeRequestCooldown: cfg.LargeRequestCooldownDur,
 		SanitizeFingerprints: cfg.Features.SanitizeBlacklistFingerprints,
 		RecordClientInfo:     cfg.Logging.RequestClientInfo,
 		HiddenModels:         livecfg.NormalizeHiddenModels(cfg.Models.Hidden),
@@ -330,19 +335,21 @@ func main() {
 	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
 
 	h := server.NewHandler(server.Config{
-		Pool:         p,
-		Upstream:     up,
-		APIKey:       cfg.APIKey,
-		Session:      sessRouter,
-		StickyCount:  sessCount,
-		RedisMode:    redisMode,
-		SoftCooldown: cfg.SoftRateDur,
-		Panel:        pn,
-		Live:         live,
-		Usage:        rec,
-		RequestLog:   requestLog,
-		PromptMode:   cfg.Prompt.Mode,
-		PromptText:   cfg.PromptText,
+		Pool:                 p,
+		Upstream:             up,
+		APIKey:               cfg.APIKey,
+		Session:              sessRouter,
+		StickyCount:          sessCount,
+		RedisMode:            redisMode,
+		SoftCooldown:         cfg.SoftRateDur,
+		LargeRequestBytes:    cfg.Pool.LargeRequestBytes,
+		LargeRequestCooldown: cfg.LargeRequestCooldownDur,
+		Panel:                pn,
+		Live:                 live,
+		Usage:                rec,
+		RequestLog:           requestLog,
+		PromptMode:           cfg.Prompt.Mode,
+		PromptText:           cfg.PromptText,
 		// 来源记录开关经 livecfg 热生效；此处同时填静态字段，供 Live 为 nil 的
 		// 裸用/测试路径拿到同一缺省值。
 		RecordClientInfo: cfg.Logging.RequestClientInfo,
@@ -552,6 +559,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetIncludeDisabledInTasks(newCfg.Schedule.IncludeDisabledInTasks)
 	sch.SetBlindboxEnabled(newCfg.Schedule.BlindboxEnabled)
+	sch.SetJitter(newCfg.Schedule.JitterPermill, newCfg.Schedule.BalanceSpreadWindowDur)
 
 	return restartRequiredFields(newCfg), nil
 }

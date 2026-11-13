@@ -121,6 +121,13 @@ type Config struct {
 		// BlindboxEnabled 自动开盲盒（连登管家末尾用能量换伙伴，每次 10 能量）。
 		// 缺省 true；false = 能量只攒不花（例如等新伙伴池上线再手动开）。
 		BlindboxEnabled bool `json:"blindbox_enabled"`
+
+		// JitterPermill 人味化抖动千分比（0-500，缺省 0 = 关闭）：余额刷新/补领
+		// 清扫的每轮间隔在 ±(值/1000)×基准内稳定偏移（misakano #84 风控反制）。
+		JitterPermill int `json:"jitter_permillion"`
+		// BalanceSpreadWindow 余额刷新账号摊开窗口（如 "60s"），空 = 关闭。
+		BalanceSpreadWindow    string        `json:"balance_spread_window"`
+		BalanceSpreadWindowDur time.Duration `json:"-"`
 	} `json:"schedule"`
 
 	Global struct {
@@ -218,6 +225,11 @@ type Config struct {
 		DegradeCooldownMax string  `json:"degrade_cooldown_max"` // 降权时长的上限钳制，默认 "2h"（仅当 cooldown 超该值才钳制）
 		IdleWeightPerHour  float64 `json:"idle_weight_per_hour"` // 闲置补偿：每小时未用 +0.5 权重
 		IdleWeightMax      float64 `json:"idle_weight_max"`      // 闲置补偿封顶，默认 5.0
+		// LargeRequestBytes 大上下文请求阈值（字节）：请求体 ≥ 该值视为大请求，
+		// 选号放弃粘性并排除窗口内已承接大请求的号（防单号连续压超大上下文触发
+		// 上游 11140 风控，ithtelab #387）。默认 262144（256KB）；<=0 = 关闭。
+		LargeRequestBytes    int64  `json:"large_request_bytes"`
+		LargeRequestCooldown string `json:"large_request_cooldown"` // 大请求排除窗口，默认 "90s"
 		// PreferExpiring 快过期积分加权开关，默认 true。开启且 expiring_soon 窗口内
 		// 存在有效批次时，该账号选号权重 ×3（虚拟实例，见 pool 路由加权）；
 		// 不按到期时间排序、与批次金额无关（issue #101 对齐实现口径）。
@@ -253,17 +265,19 @@ type Config struct {
 	} `json:"session_sticky"`
 
 	// 解析后
-	SoftRateDur            time.Duration `json:"-"`
-	SoftRateMaxDur         time.Duration `json:"-"`
-	BreakerCooldownDur     time.Duration `json:"-"`
-	BreakerCooldownMaxD    time.Duration `json:"-"`
-	DegradeCooldownDur     time.Duration `json:"-"`
-	DegradeCooldownMaxD    time.Duration `json:"-"`
-	SessionTTL             time.Duration `json:"-"`
-	SessionGCInterval      time.Duration `json:"-"`
-	BalanceRefreshInterval time.Duration `json:"-"` // 0 = 不启动（enabled=false）
-	TaskSweepInterval      time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
-	ExpiringSoonDur        time.Duration `json:"-"`
+	SoftRateDur             time.Duration `json:"-"`
+	SoftRateMaxDur          time.Duration `json:"-"`
+	BreakerCooldownDur      time.Duration `json:"-"`
+	BreakerCooldownMaxD     time.Duration `json:"-"`
+	DegradeCooldownDur      time.Duration `json:"-"`
+	LargeRequestCooldownDur time.Duration `json:"-"`
+	BalanceSpreadWindowDur  time.Duration `json:"-"`
+	DegradeCooldownMaxD     time.Duration `json:"-"`
+	SessionTTL              time.Duration `json:"-"`
+	SessionGCInterval       time.Duration `json:"-"`
+	BalanceRefreshInterval  time.Duration `json:"-"` // 0 = 不启动（enabled=false）
+	TaskSweepInterval       time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
+	ExpiringSoonDur         time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
@@ -331,6 +345,8 @@ func Default() *Config {
 	c.Pool.IdleWeightPerHour = 0.5
 	c.Pool.IdleWeightMax = 5.0
 	c.Pool.PreferExpiring = true
+	c.Pool.LargeRequestBytes = 262144
+	c.Pool.LargeRequestCooldown = "90s"
 	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
 	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
@@ -538,6 +554,16 @@ func (c *Config) normalize() error {
 	}
 	if c.BreakerCooldownMaxD, err = time.ParseDuration(c.Pool.BreakerCooldownMax); err != nil {
 		return fmt.Errorf("pool.breaker_cooldown_max: %w", err)
+	}
+	if c.Schedule.BalanceSpreadWindow != "" {
+		if c.Schedule.BalanceSpreadWindowDur, err = time.ParseDuration(c.Schedule.BalanceSpreadWindow); err != nil {
+			return fmt.Errorf("schedule.balance_spread_window: %w", err)
+		}
+	}
+	if c.Pool.LargeRequestCooldown != "" {
+		if c.LargeRequestCooldownDur, err = time.ParseDuration(c.Pool.LargeRequestCooldown); err != nil {
+			return fmt.Errorf("pool.large_request_cooldown: %w", err)
+		}
 	}
 	if c.DegradeCooldownDur, err = time.ParseDuration(c.Pool.DegradeCooldown); err != nil {
 		return fmt.Errorf("pool.degrade_cooldown: %w", err)
